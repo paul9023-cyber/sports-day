@@ -1,0 +1,13 @@
+{
+  "school": "구서여중",
+  "grades": 3,
+  "classesPerGrade": 6,
+  "games": {
+    "g1776744467017": {
+      "name": "이어달리기",
+      "scoreType": "time",
+      "createdAt": 1776744592138
+    }
+  },
+  "scores": {}
+}
