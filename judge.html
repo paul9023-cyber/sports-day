@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#16a34a" />
+  <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+  <title>우리동네 체육대회 (심판)</title>
+  <link rel="stylesheet" href="./css/style.css" />
+</head>
+<body class="app-bg">
+  <div class="topbar">
+    <a class="back" href="./index.html" id="topBack">‹</a>
+    <div>
+      <div class="title" id="topTitle">심판</div>
+      <div class="sub" id="topSub">연결 확인 중…</div>
+    </div>
+    <span class="pill" id="topPill"></span>
+  </div>
+
+  <!-- 화면 1: 반 선택 -->
+  <div class="section" id="screen-class">
+    <div class="card">
+      <h2>우리 반 선택</h2>
+      <p class="muted small">이 휴대폰이 기록할 반을 선택하세요. 선택은 기기에 저장됩니다.</p>
+      <div id="classGroupList"></div>
+    </div>
+  </div>
+
+  <!-- 화면 2: 종목 리스트 -->
+  <div class="section hidden" id="screen-games">
+    <div class="card">
+      <h2>종목 선택</h2>
+      <div id="judgeGameList"></div>
+    </div>
+    <button class="btn btn-ghost btn-block" id="changeClassBtn">반 변경</button>
+  </div>
+
+  <!-- 화면 3: 점수(휠) 입력 -->
+  <div class="section hidden" id="screen-points">
+    <div class="card">
+      <h2 id="pGameName">-</h2>
+      <p class="muted small">10점부터 180점까지 10점 단위로 선택하세요.</p>
+      <div class="spacer"></div>
+      <div class="wheel-picker">
+        <div class="wheel-indicator"></div>
+        <div class="wheel-mask-top"></div>
+        <div class="wheel-mask-bottom"></div>
+        <div class="wheel-scroll" id="wheelScroll"></div>
+      </div>
+      <div class="spacer"></div>
+      <div class="row">
+        <button class="btn btn-ghost" id="pBack">돌아가기</button>
+        <button class="btn btn-success" id="pSubmit">제출</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-danger btn-block hidden" id="pDelete">이 반의 기록 삭제</button>
+    </div>
+  </div>
+
+  <!-- 화면 4: 타임랩 -->
+  <div class="section hidden" id="screen-time">
+    <div class="card">
+      <h2 id="tGameName">-</h2>
+      <p class="muted small">시작 버튼을 누르면 타이머가 시작되고, 끝 버튼을 누르면 기록이 확정됩니다.</p>
+      <div class="time-display" id="tDisplay">00:00.<span class="ms">00</span></div>
+      <div class="time-buttons">
+        <button class="circle-btn" id="tStart">시작</button>
+        <button class="circle-btn reset hidden" id="tReset">초기화</button>
+      </div>
+      <div class="row">
+        <button class="btn btn-ghost" id="tBack">돌아가기</button>
+        <button class="btn btn-success" id="tSubmit" disabled>제출</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-danger btn-block hidden" id="tDelete">이 반의 기록 삭제</button>
+    </div>
+  </div>
+
+  <script type="module" src="./js/judge.js"></script>
+</body>
+</html>
