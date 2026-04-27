@@ -7,6 +7,27 @@
   <link rel="icon" type="image/png" href="./icons/logo.png" />
   <title>우리동네 체육대회 (본부)</title>
   <link rel="stylesheet" href="./css/style.css" />
+  <script>
+    // 모든 JS 에러를 화면 상단에 빨간 박스로 표시 (모바일 디버그 용도)
+    (function () {
+      function showErr(msg) {
+        var box = document.getElementById("__errBox");
+        if (!box) {
+          box = document.createElement("div");
+          box.id = "__errBox";
+          box.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;padding:10px 14px;font-size:12px;font-family:monospace;white-space:pre-wrap;max-height:40vh;overflow:auto;border-bottom:3px solid #fca5a5;";
+          (document.body || document.documentElement).appendChild(box);
+        }
+        box.textContent += msg + "\n";
+      }
+      window.addEventListener("error", function (e) {
+        showErr("[JS ERROR] " + (e.message || e.error) + " @ " + (e.filename || "?") + ":" + (e.lineno || "?"));
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        showErr("[Promise REJECT] " + (e.reason && (e.reason.message || e.reason)));
+      });
+    })();
+  </script>
 </head>
 <body class="app-bg">
   <div class="topbar">
