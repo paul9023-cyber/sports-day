@@ -260,13 +260,23 @@ class Handler(SimpleHTTPRequestHandler):
         # 조용히
         return
 
+    # 정적 파일(HTML/JS/CSS 등)도 캐시되지 않도록 헤더 강제 — 모바일 브라우저 캐시 문제 방지
+    def end_headers(self):
+        try:
+            ct = self.headers.get("Content-Type", "") if hasattr(self, "headers") else ""
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        except Exception:
+            pass
+        super().end_headers()
+
     # --- 유틸 ---
     def _send_json(self, code, data):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         try:
             self.wfile.write(body)

@@ -210,7 +210,7 @@ function renderGameList() {
       el("div", { class: "jg-name" }, [
         document.createTextNode(g.name + " "),
         el("span", { class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}` },
-          g.scoreType === "time" ? "타임" : "점수"),
+          g.scoreType === "time" ? "스톱워치" : "점수"),
         scopePill,
         submitted
           ? el("div", { class: "small muted", style: "margin-top:4px" },
