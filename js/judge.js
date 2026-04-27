@@ -4,9 +4,26 @@ import { createWheel } from "./wheel.js";
 
 /* ---------------- 상태 ---------------- */
 const LS_KEY = "judge_class_id";   // "1-5" 같은 형식
+const LS_INFO_KEY = "judge_info";  // {studentNo, name} JSON
+
+function loadJudgeInfo() {
+  try {
+    const raw = localStorage.getItem(LS_INFO_KEY);
+    if (!raw) return { studentNo: "", name: "" };
+    const o = JSON.parse(raw);
+    return { studentNo: String(o.studentNo || ""), name: String(o.name || "") };
+  } catch (e) {
+    return { studentNo: "", name: "" };
+  }
+}
+function saveJudgeInfo(info) {
+  try { localStorage.setItem(LS_INFO_KEY, JSON.stringify(info)); } catch (e) {}
+}
+
 const local = {
   classId: localStorage.getItem(LS_KEY) || "",
   currentGameId: null,
+  info: loadJudgeInfo(),  // {studentNo, name}
 };
 
 /* ---------------- 공통 UI ---------------- */
@@ -16,19 +33,51 @@ onConnection((online) => {
   t.style.color = online ? "#86efac" : "#fca5a5";
 });
 
-onState(() => {
+onState((s) => {
   updateTopBar();
+
+  // 본부에서 "전체 초기화"를 했거나 현재 보고 있던 종목이 삭제됐을 때
+  // → 종목 입력 화면을 자동으로 닫고 목록으로 돌려보냄
+  if (local.currentGameId && (!s.games || !s.games[local.currentGameId])) {
+    local.currentGameId = null;
+    if (inScreen("points") || inScreen("time")) {
+      stopTimer();
+      showGameList();
+      toast("본부에서 종목이 변경되어 목록으로 돌아갑니다");
+    }
+  }
+  // 학년/반 구성이 줄어 내 반이 더 이상 유효하지 않을 때 → 반 선택으로 복귀
+  if (local.classId) {
+    const [g, c] = local.classId.split("-").map(Number);
+    const cpg = (s.classesPerGrade && (s.classesPerGrade[String(g)] ?? s.classesPerGrade[g])) || 0;
+    if (g > Number(s.grades || 0) || c > Number(cpg || 0)) {
+      local.classId = "";
+      localStorage.removeItem(LS_KEY);
+      updateTopBar();
+      showClassSelect();
+    }
+  }
+
   if (inScreen("games")) renderGameList();
   if (inScreen("class")) renderClassGroups();
 });
 
 function updateTopBar() {
   const title = document.getElementById("topTitle");
+  const sub = document.getElementById("topSub");
   const pill = document.getElementById("topPill");
   const s = getState();
   if (local.classId) {
-    title.textContent = `심판 · ${formatClassId(local.classId)}`;
-    pill.textContent = s.school || "학교 미설정";
+    title.textContent = `${formatClassId(local.classId)}`;
+    if (local.info?.name || local.info?.studentNo) {
+      const parts = [];
+      if (local.info.name) parts.push(local.info.name);
+      if (local.info.studentNo) parts.push(`#${local.info.studentNo}`);
+      // sub는 연결 상태로 사용 중. 학교 + 심판 정보를 pill에 합쳐 표시
+      pill.textContent = parts.join(" · ");
+    } else {
+      pill.textContent = s.school || "학교 미설정";
+    }
   } else {
     title.textContent = "심판";
     pill.textContent = s.school || "";
@@ -100,12 +149,7 @@ function renderClassGroups() {
       const done = submittedCount[cid] || 0;
       const btn = el("button", {
         class: `class-btn ${local.classId === cid ? "selected" : ""}`,
-        onclick: () => {
-          local.classId = cid;
-          localStorage.setItem(LS_KEY, cid);
-          updateTopBar();
-          showGameList();
-        }
+        onclick: () => onSelectClass(cid),
       }, [
         el("div", {}, `${c}반`),
         total > 0 ? el("div", { class: "submitted" },
@@ -120,6 +164,7 @@ function renderClassGroups() {
 /* ---------------- 2. 종목 리스트 ---------------- */
 function showGameList() {
   renderGameList();
+  renderJudgeWho();
   showScreen("games");
 }
 
@@ -165,7 +210,7 @@ function renderGameList() {
       el("div", { class: "jg-name" }, [
         document.createTextNode(g.name + " "),
         el("span", { class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}` },
-          g.scoreType === "time" ? "타임" : "점수"),
+          g.scoreType === "time" ? "스톱워치" : "점수"),
         scopePill,
         submitted
           ? el("div", { class: "small muted", style: "margin-top:4px" },
@@ -182,6 +227,98 @@ function renderGameList() {
 
 document.getElementById("changeClassBtn").addEventListener("click", () => {
   showClassSelect();
+});
+
+document.getElementById("editInfoBtn")?.addEventListener("click", () => {
+  if (!local.classId) return;
+  _pendingClassId = local.classId;
+  openJudgeInfoModal(local.classId, true);
+});
+
+function renderJudgeWho() {
+  const wrap = document.getElementById("judgeWho");
+  if (!wrap) return;
+  if (local.info?.name || local.info?.studentNo) {
+    const parts = [];
+    if (local.info.name) parts.push(local.info.name);
+    if (local.info.studentNo) parts.push(`학번 ${local.info.studentNo}`);
+    wrap.textContent = `심판자: ${parts.join(" · ")}`;
+  } else {
+    wrap.textContent = "";
+  }
+}
+
+/* ---------------- 심판자 정보 입력 ---------------- */
+let _pendingClassId = null;
+
+function onSelectClass(cid) {
+  // 같은 반을 다시 누르고 이미 정보가 입력되어 있으면 바로 진행
+  const sameClass = (cid === local.classId);
+  const hasInfo = !!(local.info?.name && local.info?.studentNo);
+  if (sameClass && hasInfo) {
+    showGameList();
+    return;
+  }
+  // 다른 반을 선택하면 무조건 정보 다시 입력
+  _pendingClassId = cid;
+  openJudgeInfoModal(cid, sameClass);
+}
+
+function openJudgeInfoModal(cid, prefill) {
+  const modal = document.getElementById("judgeInfoModal");
+  const noInp = document.getElementById("judgeStudentNo");
+  const nameInp = document.getElementById("judgeStudentName");
+  const sub = document.getElementById("judgeInfoSubtitle");
+  const err = document.getElementById("judgeInfoError");
+
+  sub.textContent = `${formatClassId(cid)} 담당 심판 정보`;
+  err.textContent = "";
+
+  if (prefill && local.info) {
+    noInp.value = local.info.studentNo || "";
+    nameInp.value = local.info.name || "";
+  } else {
+    noInp.value = "";
+    nameInp.value = "";
+  }
+  modal.classList.remove("hidden");
+  setTimeout(() => noInp.focus(), 50);
+}
+
+function closeJudgeInfoModal() {
+  document.getElementById("judgeInfoModal").classList.add("hidden");
+  _pendingClassId = null;
+}
+
+function submitJudgeInfo() {
+  const no = document.getElementById("judgeStudentNo").value.trim();
+  const name = document.getElementById("judgeStudentName").value.trim();
+  const err = document.getElementById("judgeInfoError");
+
+  if (!no) { err.textContent = "학번을 입력하세요"; document.getElementById("judgeStudentNo").focus(); return; }
+  if (!name) { err.textContent = "이름을 입력하세요"; document.getElementById("judgeStudentName").focus(); return; }
+
+  local.info = { studentNo: no, name };
+  saveJudgeInfo(local.info);
+
+  if (_pendingClassId) {
+    local.classId = _pendingClassId;
+    localStorage.setItem(LS_KEY, _pendingClassId);
+    _pendingClassId = null;
+  }
+  closeJudgeInfoModal();
+  updateTopBar();
+  showGameList();
+  toast("심판자 정보가 저장되었습니다");
+}
+
+document.getElementById("judgeInfoOk")?.addEventListener("click", submitJudgeInfo);
+document.getElementById("judgeInfoCancel")?.addEventListener("click", closeJudgeInfoModal);
+document.getElementById("judgeStudentName")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitJudgeInfo();
+});
+document.getElementById("judgeInfoModal")?.addEventListener("click", (e) => {
+  if (e.target.id === "judgeInfoModal") closeJudgeInfoModal();
 });
 
 /* ---------------- 3. 종목 열기 ---------------- */
@@ -249,10 +386,19 @@ function openTime(gid, g) {
 
   document.getElementById("tDelete").classList.toggle("hidden", !sc);
   document.getElementById("tStart").onclick = toggleTimer;
-  document.getElementById("tReset").onclick = resetTimer;
+  document.getElementById("tReset").onclick = confirmResetTimer;
   document.getElementById("tBack").onclick = () => { stopTimer(); showGameList(); };
   document.getElementById("tSubmit").onclick = () => submitTime(gid);
   document.getElementById("tDelete").onclick = () => deleteMyScore(gid);
+}
+
+async function confirmResetTimer() {
+  // 이미 0이면 확인 없이 그대로
+  if (!timerState.running && timerState.elapsed === 0) return;
+  const ok = await confirmBox("정말 초기화할까요?\n현재 측정된 기록이 모두 사라집니다.");
+  if (!ok) return;
+  resetTimer();
+  toast("초기화되었습니다");
 }
 
 function toggleTimer() {
@@ -342,7 +488,14 @@ async function deleteMyScore(gid) {
 /* ---------------- 초기 진입 ---------------- */
 if (local.classId && /^\d+-\d+$/.test(local.classId)) {
   updateTopBar();
-  showGameList();
+  // 학번/이름이 비어 있으면 입력 요청
+  if (!local.info?.name || !local.info?.studentNo) {
+    _pendingClassId = local.classId;
+    showClassSelect();
+    setTimeout(() => openJudgeInfoModal(local.classId, false), 100);
+  } else {
+    showGameList();
+  }
 } else {
   local.classId = "";
   showClassSelect();

@@ -259,7 +259,7 @@ function renderGameList() {
     const count = scopeIds.filter(cid => scoresObj[cid] != null).length;
     const typePill = el("span", {
       class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}`
-    }, g.scoreType === "time" ? "타임" : "점수");
+    }, g.scoreType === "time" ? "스톱워치" : "점수");
     const scopePill = el("span", {
       class: "pill",
       style: g.scope === "grade"
@@ -339,7 +339,7 @@ function renderLive() {
     }, [
       el("h2", { style: "margin:0;flex:1;min-width:140px" }, g.name),
       el("span", { class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}` },
-        g.scoreType === "time" ? "타임" : "점수"),
+        g.scoreType === "time" ? "스톱워치" : "점수"),
       scopeBadge,
     ]));
     if (g.scoreType === "time") {
@@ -475,16 +475,65 @@ function renderTotal() {
 }
 
 /* ---------------- 데이터 초기화 버튼 ---------------- */
+const HQ_PASSWORD = "5350";
+
+// 비밀번호를 입력받는 prompt 모달 (CSS 모달 재사용 없이 직접 만들어 띄움)
+function passwordPrompt(message) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.style.alignItems = "center";
+    wrap.innerHTML = `
+      <div class="modal" style="max-width:340px;text-align:center;">
+        <h3 style="margin:0 0 6px">⚠ 본부 비밀번호 확인</h3>
+        <p class="small muted" style="margin:0 0 12px;white-space:pre-line">${message || ""}</p>
+        <input type="password" inputmode="numeric" autocomplete="off" maxlength="16"
+               class="input" placeholder="비밀번호"
+               style="text-align:center;font-size:20px;letter-spacing:6px;" />
+        <div class="small" style="color:#fca5a5;min-height:18px;margin-top:6px" data-err></div>
+        <div class="spacer"></div>
+        <div class="row">
+          <button class="btn btn-ghost" data-cancel>취소</button>
+          <button class="btn btn-danger" data-ok>확인</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const inp = wrap.querySelector("input");
+    const err = wrap.querySelector("[data-err]");
+    const close = (val) => { wrap.remove(); resolve(val); };
+    setTimeout(() => inp.focus(), 50);
+    wrap.querySelector("[data-cancel]").addEventListener("click", () => close(false));
+    wrap.querySelector("[data-ok]").addEventListener("click", () => {
+      if (inp.value === HQ_PASSWORD) close(true);
+      else { err.textContent = "비밀번호가 올바르지 않습니다"; inp.value = ""; inp.focus(); }
+    });
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") wrap.querySelector("[data-ok]").click();
+      if (e.key === "Escape") close(false);
+    });
+    wrap.addEventListener("click", (e) => { if (e.target === wrap) close(false); });
+  });
+}
+
 document.getElementById("resetScoresBtn")?.addEventListener("click", async () => {
-  const ok = await confirmBox("모든 점수/기록을 삭제할까요? (종목은 남습니다)");
+  const ok = await confirmBox(
+    "모든 점수/기록을 삭제할까요?\n(종목 목록은 그대로 남습니다)\n\n이 작업은 되돌릴 수 없습니다."
+  );
   if (!ok) return;
+  const pwOk = await passwordPrompt("점수 초기화를 위해\n본부 비밀번호를 입력하세요.");
+  if (!pwOk) return;
   try { await api.resetScores(); toast("점수가 초기화되었습니다"); }
   catch (e) { toast("실패"); }
 });
+
 document.getElementById("resetAllBtn")?.addEventListener("click", async () => {
-  const ok = await confirmBox("⚠️ 모든 종목과 점수를 완전히 삭제합니다. 진행할까요?");
+  const ok = await confirmBox(
+    "⚠️ 전체 초기화\n\n모든 종목과 모든 점수가 완전히 삭제됩니다.\n학교 이름과 학년/반 구성만 남고 나머지는 사라집니다.\n\n정말 진행할까요?"
+  );
   if (!ok) return;
-  try { await api.resetAll(); toast("초기화 완료"); }
+  const pwOk = await passwordPrompt("전체 초기화를 위해\n본부 비밀번호를 입력하세요.");
+  if (!pwOk) return;
+  try { await api.resetAll(); toast("전체 초기화 완료"); }
   catch (e) { toast("실패"); }
 });
 

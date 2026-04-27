@@ -75,6 +75,23 @@ function setConn(v) {
   target.dispatchEvent(new CustomEvent("conn", { detail: v }));
 }
 
+// 직접 fetch로 최신 state를 받아오는 보조 수단
+// (SSE 연결이 끊겼거나 모바일이 백그라운드에서 깨어났을 때 사용)
+async function refreshState() {
+  try {
+    const res = await fetch("/api/state", { cache: "no-store" });
+    if (!res.ok) return;
+    const fresh = await res.json();
+    _state = fresh;
+    target.dispatchEvent(new Event("state"));
+    setConn(true);
+  } catch (e) {
+    setConn(false);
+  }
+}
+
+let _lastEventAt = 0;
+
 function startSSE() {
   try {
     if (_es) _es.close();
@@ -83,9 +100,10 @@ function startSSE() {
     setTimeout(startSSE, 2000);
     return;
   }
-  _es.onopen = () => setConn(true);
+  _es.onopen = () => { setConn(true); _lastEventAt = Date.now(); };
   _es.onmessage = (ev) => {
     setConn(true);
+    _lastEventAt = Date.now();
     try {
       _state = JSON.parse(ev.data);
       target.dispatchEvent(new Event("state"));
@@ -98,6 +116,30 @@ function startSSE() {
     }
   };
 }
+
+// 모바일에서 화면이 다시 켜지거나 탭이 다시 활성화되면
+// 1) 즉시 최신 상태를 직접 받아오고
+// 2) SSE 연결이 죽었을 가능성이 높으면 재연결
+function _onWakeUp() {
+  refreshState();
+  const stale = (Date.now() - _lastEventAt) > 30_000;
+  if (!_es || _es.readyState === EventSource.CLOSED || stale) {
+    startSSE();
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") _onWakeUp();
+});
+window.addEventListener("focus", _onWakeUp);
+window.addEventListener("online", _onWakeUp);
+
+// 안전망: 30초마다 SSE 메시지가 없으면 직접 갱신
+setInterval(() => {
+  if (Date.now() - _lastEventAt > 30_000) {
+    refreshState();
+  }
+}, 15_000);
 
 async function req(method, path, body) {
   const res = await fetch(path, {
@@ -131,4 +173,6 @@ export const api = {
   resetScores: () => req("POST", "/api/reset-scores"),
 };
 
+// 페이지 진입 즉시 최신 상태를 받아오고 (SSE 첫 메시지 기다리지 않음)
+refreshState();
 startSSE();
