@@ -1,5 +1,5 @@
-import { api, getState, onState, onConnection, grades, classesPerGrade, allClassIds } from "./api.js";
-import { $, $$, el, toast, formatTime, scoreToText, confirmBox, formatClassId } from "./common.js";
+import { api, getState, onState, onConnection, grades, classesForGrade, classesPerGradeMap, allClassIds } from "./api.js";
+import { $, $$, el, toast, formatTime, scoreToText, confirmBox, formatClassId, gameScopeLabel } from "./common.js";
 import { createWheel } from "./wheel.js";
 
 /* ---------------- 상태 ---------------- */
@@ -65,12 +65,22 @@ function renderClassGroups() {
 
   const s = getState();
   const G = grades();
-  const CPG = classesPerGrade();
 
-  // 현재 제출 수 계산 (classId별)
+  // 각 반이 "참여 가능한 게임" 수 계산 (scope=grade 게임은 해당 학년만 카운트)
+  const gamesPerGrade = {};
+  for (let g = 1; g <= G; g++) gamesPerGrade[g] = 0;
+  for (const [gid, game] of Object.entries(s.games || {})) {
+    if (game.scope === "grade" && game.gradeNum) {
+      const gn = Number(game.gradeNum);
+      if (gamesPerGrade[gn] != null) gamesPerGrade[gn]++;
+    } else {
+      for (let g = 1; g <= G; g++) gamesPerGrade[g]++;
+    }
+  }
+
+  // 제출 수 계산
   const submittedCount = {};
-  const totalGames = Object.keys(s.games).length;
-  for (const gid of Object.keys(s.games)) {
+  for (const gid of Object.keys(s.games || {})) {
     const scs = s.scores[gid] || {};
     for (const cid of Object.keys(scs)) {
       submittedCount[cid] = (submittedCount[cid] || 0) + 1;
@@ -83,6 +93,8 @@ function renderClassGroups() {
     }, `${gr}학년`));
 
     const grid = el("div", { class: "class-grid" });
+    const CPG = classesForGrade(gr);
+    const total = gamesPerGrade[gr] || 0;
     for (let c = 1; c <= CPG; c++) {
       const cid = `${gr}-${c}`;
       const done = submittedCount[cid] || 0;
@@ -96,8 +108,8 @@ function renderClassGroups() {
         }
       }, [
         el("div", {}, `${c}반`),
-        totalGames > 0 ? el("div", { class: "submitted" },
-          `${done}/${totalGames}`) : null,
+        total > 0 ? el("div", { class: "submitted" },
+          `${done}/${total}`) : null,
       ]);
       grid.appendChild(btn);
     }
@@ -115,15 +127,37 @@ function renderGameList() {
   const wrap = document.getElementById("judgeGameList");
   wrap.innerHTML = "";
   const s = getState();
-  const entries = Object.entries(s.games).sort((a, b) =>
+  const myGrade = Number((local.classId || "").split("-")[0] || 0);
+
+  // 내 학년에 해당하는 게임만 표시
+  const allEntries = Object.entries(s.games).sort((a, b) =>
     (a[1].createdAt || 0) - (b[1].createdAt || 0));
-  if (entries.length === 0) {
+  const entries = allEntries.filter(([_, g]) => {
+    if (g.scope === "grade" && g.gradeNum) {
+      return Number(g.gradeNum) === myGrade;
+    }
+    return true;
+  });
+
+  if (allEntries.length === 0) {
     wrap.appendChild(el("div", { class: "empty" }, "등록된 종목이 없습니다. 본부에서 추가해 주세요."));
     return;
   }
+  if (entries.length === 0) {
+    wrap.appendChild(el("div", { class: "empty" },
+      `${myGrade}학년이 참가하는 종목이 아직 없습니다.`));
+    return;
+  }
+
   for (const [gid, g] of entries) {
     const sc = (s.scores[gid] || {})[local.classId];
     const submitted = sc != null;
+    const scopePill = el("span", {
+      class: "pill",
+      style: g.scope === "grade"
+        ? "background:#f59e0b22;color:#fbbf24;margin-left:4px"
+        : "background:#38bdf822;color:#93c5fd;margin-left:4px",
+    }, gameScopeLabel(g));
     const item = el("div", {
       class: "judge-game-item",
       onclick: () => openGame(gid, g),
@@ -132,6 +166,7 @@ function renderGameList() {
         document.createTextNode(g.name + " "),
         el("span", { class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}` },
           g.scoreType === "time" ? "타임" : "점수"),
+        scopePill,
         submitted
           ? el("div", { class: "small muted", style: "margin-top:4px" },
               `기록: ${scoreToText(g.scoreType, sc.value)} (수정 가능)`)

@@ -1,6 +1,12 @@
-import { api, getState, onState, onConnection, grades, classesPerGrade, allClassIds, totalClasses } from "./api.js";
-import { $, $$, el, toast, formatTime, scoreToText, computeRanks, confirmBox, formatClassId, parseClassId } from "./common.js";
+import { api, getState, onState, onConnection, grades, classesPerGradeMap, classesForGrade, allClassIds, classIdsForGrade, totalClasses } from "./api.js";
+import { $, $$, el, toast, formatTime, scoreToText, computeRanks, computeScores, getScopeClassIds, gameScopeLabel, confirmBox, formatClassId, parseClassId } from "./common.js";
 import { renderQRCode } from "./qr.js";
+
+/* ---------------- 비밀번호 게이트 ---------------- */
+if (sessionStorage.getItem("hq_auth_ok") !== "1") {
+  // 인증 안 됐으면 홈으로 돌려보냄
+  location.replace("./index.html");
+}
 
 /* ---------------- 연결 표시 ---------------- */
 onConnection((online) => {
@@ -29,15 +35,88 @@ onState((s) => {
 
   // 학년/반 구성 입력
   const gInput = document.getElementById("gradesInput");
-  const cInput = document.getElementById("classesPerGradeInput");
   if (document.activeElement !== gInput) gInput.value = s.grades || 3;
-  if (document.activeElement !== cInput) cInput.value = s.classesPerGrade || 10;
-  document.getElementById("structureSummary").textContent =
-    `현재: ${s.grades}학년 × 각 ${s.classesPerGrade}반 = 총 ${(s.grades||0)*(s.classesPerGrade||0)}개 반`;
+  renderGradeClassInputs();
+  updateStructureSummary();
 
+  renderGameScopeGradeButtons();
   renderGameList();
   renderLive();
   renderTotal();
+});
+
+/* ---------------- 학년별 반 수 입력 UI ---------------- */
+function renderGradeClassInputs() {
+  const s = getState();
+  const wrap = document.getElementById("gradeClassInputs");
+  if (!wrap) return;
+  const G = Number(document.getElementById("gradesInput").value || s.grades || 3);
+  const cpg = s.classesPerGrade || {};
+  // 기존 포커스 보존
+  const active = document.activeElement;
+  const activeGrade = active?.dataset?.grade;
+  const activeVal = active?.value;
+
+  wrap.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.flexWrap = "wrap";
+  row.style.gap = "10px";
+  for (let g = 1; g <= G; g++) {
+    const val = cpg[String(g)] ?? 10;
+    const cell = document.createElement("div");
+    cell.style.flex = "1 1 110px";
+    cell.innerHTML = `
+      <div class="label">${g}학년 반 수</div>
+      <input class="input grade-class-input" type="number" min="1" max="30" data-grade="${g}" value="${val}" />
+    `;
+    row.appendChild(cell);
+  }
+  wrap.appendChild(row);
+
+  // 포커스 복원
+  if (activeGrade) {
+    const el2 = wrap.querySelector(`input[data-grade="${activeGrade}"]`);
+    if (el2) { el2.focus(); if (activeVal != null) el2.value = activeVal; }
+  }
+
+  // 입력 시 요약 갱신
+  wrap.querySelectorAll(".grade-class-input").forEach(inp => {
+    inp.addEventListener("input", updateStructureSummary);
+  });
+}
+
+function collectClassesPerGrade() {
+  const G = Number(document.getElementById("gradesInput").value || 3);
+  const out = {};
+  for (let g = 1; g <= G; g++) {
+    const inp = document.querySelector(`.grade-class-input[data-grade="${g}"]`);
+    let v = Number(inp?.value || 10);
+    if (!(v >= 1 && v <= 30)) v = 10;
+    out[String(g)] = v;
+  }
+  return out;
+}
+
+function updateStructureSummary() {
+  const G = Number(document.getElementById("gradesInput").value || 3);
+  const m = collectClassesPerGrade();
+  let total = 0;
+  const parts = [];
+  for (let g = 1; g <= G; g++) {
+    const n = Number(m[String(g)] || 0);
+    total += n;
+    parts.push(`${g}학년 ${n}반`);
+  }
+  const el2 = document.getElementById("structureSummary");
+  if (el2) el2.textContent = `${parts.join(", ")} → 총 ${total}개 반`;
+}
+
+// 학년 수가 바뀌면 반 입력 UI 재렌더
+document.getElementById("gradesInput")?.addEventListener("input", () => {
+  renderGradeClassInputs();
+  updateStructureSummary();
+  renderGameScopeGradeButtons();
 });
 
 /* ---------------- 학교명 저장 ---------------- */
@@ -51,36 +130,108 @@ document.getElementById("saveSchool").addEventListener("click", async () => {
 /* ---------------- 학년/반 구성 저장 ---------------- */
 document.getElementById("saveStructure").addEventListener("click", async () => {
   const g = Number(document.getElementById("gradesInput").value);
-  const c = Number(document.getElementById("classesPerGradeInput").value);
-  if (!(g >= 1 && g <= 12) || !(c >= 1 && c <= 30)) {
-    toast("학년 1~12, 반 1~30 범위로 입력하세요"); return;
+  if (!(g >= 1 && g <= 12)) {
+    toast("학년 수는 1~12 범위로 입력하세요"); return;
+  }
+  const m = collectClassesPerGrade();
+  for (let i = 1; i <= g; i++) {
+    const n = Number(m[String(i)] || 0);
+    if (!(n >= 1 && n <= 30)) {
+      toast(`${i}학년 반 수는 1~30 범위로 입력하세요`); return;
+    }
   }
   const s = getState();
-  if ((g < s.grades || c < s.classesPerGrade) && Object.keys(s.scores).length > 0) {
+  const prevMap = s.classesPerGrade || {};
+  let shrink = g < Number(s.grades || g);
+  if (!shrink) {
+    for (let i = 1; i <= g; i++) {
+      if (Number(m[String(i)] || 0) < Number(prevMap[String(i)] || 0)) { shrink = true; break; }
+    }
+  }
+  if (shrink && Object.keys(s.scores || {}).length > 0) {
     const ok = await confirmBox(
       `구성을 줄이면 범위를 벗어난 반의 점수는 화면에서 사라집니다. 그대로 저장할까요?\n(데이터는 남지만 표시되지 않습니다)`
     );
     if (!ok) return;
   }
-  try { await api.setStructure(g, c); toast(`${g}학년 × ${c}반 으로 저장됨`); }
-  catch (e) { toast("저장 실패"); }
+  try {
+    await api.setStructure(g, m);
+    toast("학년/반 구성 저장됨");
+  } catch (e) { toast("저장 실패"); }
 });
 
 /* ---------------- 종목 추가 ---------------- */
 let newGameType = "points";
+let newGameScope = "all";
+let newGameGrade = null;
+let newGameOrder = "asc";
+
+function updateGameFormVisibility() {
+  document.getElementById("timeOptions").classList.toggle("hidden", newGameType !== "time");
+  document.getElementById("gameGradePicker").classList.toggle("hidden",
+    !(newGameType === "time" && newGameScope === "grade"));
+}
+
 $$("#gameTypeSeg button").forEach(b => {
   b.addEventListener("click", () => {
     $$("#gameTypeSeg button").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
     newGameType = b.dataset.type;
+    updateGameFormVisibility();
   });
 });
+
+$$("#gameScopeSeg button").forEach(b => {
+  b.addEventListener("click", () => {
+    $$("#gameScopeSeg button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    newGameScope = b.dataset.scope;
+    if (newGameScope === "grade" && !newGameGrade) newGameGrade = 1;
+    updateGameFormVisibility();
+    renderGameScopeGradeButtons();
+  });
+});
+
+$$("#gameOrderSeg button").forEach(b => {
+  b.addEventListener("click", () => {
+    $$("#gameOrderSeg button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    newGameOrder = b.dataset.order;
+  });
+});
+
+function renderGameScopeGradeButtons() {
+  const G = Number(document.getElementById("gradesInput").value || grades());
+  const wrap = document.getElementById("gameGradeSeg");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (newGameGrade == null || newGameGrade > G) newGameGrade = 1;
+  for (let g = 1; g <= G; g++) {
+    const btn = document.createElement("button");
+    btn.textContent = `${g}학년`;
+    if (g === newGameGrade) btn.classList.add("active");
+    btn.addEventListener("click", () => {
+      newGameGrade = g;
+      renderGameScopeGradeButtons();
+    });
+    wrap.appendChild(btn);
+  }
+}
 
 document.getElementById("addGame").addEventListener("click", async () => {
   const name = document.getElementById("gameName").value.trim();
   if (!name) { toast("종목 이름을 입력하세요"); return; }
+  const opts = {};
+  if (newGameType === "time") {
+    opts.scope = newGameScope;
+    opts.gradeNum = newGameScope === "grade" ? newGameGrade : null;
+    opts.timeOrder = newGameOrder;
+  } else {
+    // points 게임은 항상 전체
+    opts.scope = "all"; opts.gradeNum = null;
+  }
   try {
-    await api.addGame(name, newGameType);
+    await api.addGame(name, newGameType, opts);
     document.getElementById("gameName").value = "";
     toast("종목 추가됨");
   } catch (e) { toast("추가 실패"); }
@@ -101,18 +252,30 @@ function renderGameList() {
     wrap.appendChild(el("div", { class: "empty" }, "등록된 종목이 없습니다. 위에서 추가해 보세요."));
     return;
   }
-  const TC = totalClasses();
+  const allIds = allClassIds();
   for (const [gid, g] of entries) {
     const scoresObj = getState().scores[gid] || {};
-    const count = Object.keys(scoresObj).length;
-    const pill = el("span", {
+    const scopeIds = getScopeClassIds(g, allIds);
+    const count = scopeIds.filter(cid => scoresObj[cid] != null).length;
+    const typePill = el("span", {
       class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}`
     }, g.scoreType === "time" ? "타임" : "점수");
+    const scopePill = el("span", {
+      class: "pill",
+      style: g.scope === "grade"
+        ? "background:#f59e0b22;color:#fbbf24;margin-left:4px"
+        : "background:#38bdf822;color:#93c5fd;margin-left:4px",
+    }, gameScopeLabel(g));
+    const orderNote = (g.scoreType === "time")
+      ? ` · ${g.timeOrder === "desc" ? "느린 순 1등" : "빠른 순 1등"}`
+      : "";
     const item = el("div", { class: "game-item" }, [
       el("div", { class: "g-name" }, [
         document.createTextNode(g.name + " "),
-        pill,
-        el("div", { class: "small muted", style: "margin-top:4px" }, `입력 ${count}/${TC}반`),
+        typePill,
+        scopePill,
+        el("div", { class: "small muted", style: "margin-top:4px" },
+          `입력 ${count}/${scopeIds.length}반${orderNote}`),
       ]),
       el("div", { class: "g-actions" }, [
         el("button", { class: "icon-btn", title: "이름 수정",
@@ -149,32 +312,55 @@ function renderLive() {
     return;
   }
   const G = grades();
-  const CPG = classesPerGrade();
+  const allIds = allClassIds();
+  const cpgMap = classesPerGradeMap();
 
   for (const [gid, g] of entries) {
     const scoresObj = getState().scores[gid] || {};
-    const list = allClassIds().map((cid) => ({
+    const scopeIds = getScopeClassIds(g, allIds);
+    const list = scopeIds.map((cid) => ({
       classId: cid,
       value: scoresObj[cid]?.value ?? null,
     }));
-    const ranked = computeRanks(list.filter(x => x.value != null), g.scoreType);
+    const ranked = computeRanks(list.filter(x => x.value != null), g);
+
+    // 각 반이 실제로 얻는 점수 계산 (타임랩은 자동환산, 포인트는 입력값)
+    const { scoreMap } = computeScores(g, scoresObj, scopeIds, cpgMap, "last");
 
     const card = el("div", { class: "card" });
+    const scopeBadge = el("span", {
+      class: "pill",
+      style: g.scope === "grade"
+        ? "background:#f59e0b22;color:#fbbf24"
+        : "background:#38bdf822;color:#93c5fd",
+    }, gameScopeLabel(g));
     card.appendChild(el("div", {
-      style: "display:flex;align-items:center;gap:8px;margin-bottom:8px;"
+      style: "display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap"
     }, [
-      el("h2", { style: "margin:0;flex:1" }, g.name),
+      el("h2", { style: "margin:0;flex:1;min-width:140px" }, g.name),
       el("span", { class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}` },
         g.scoreType === "time" ? "타임" : "점수"),
+      scopeBadge,
     ]));
+    if (g.scoreType === "time") {
+      card.appendChild(el("div", { class: "small muted", style: "margin-bottom:6px" },
+        g.scope === "grade"
+          ? `1등=${(cpgMap[String(g.gradeNum)]||10)*10}점 … 10점 간격 · ${g.timeOrder === "desc" ? "느린 순" : "빠른 순"} 1등`
+          : `1등=180점 … 18등=10점 고정 · ${g.timeOrder === "desc" ? "느린 순" : "빠른 순"} 1등`
+      ));
+    }
 
-    // 입력 현황 — 학년별로 그룹핑
-    for (let gr = 1; gr <= G; gr++) {
+    // 입력 현황 — 학년별로 그룹핑 (scope=grade면 그 학년만)
+    const showGrades = (g.scope === "grade" && g.gradeNum) ? [Number(g.gradeNum)] : [];
+    if (showGrades.length === 0) for (let i = 1; i <= G; i++) showGrades.push(i);
+
+    for (const gr of showGrades) {
       card.appendChild(el("div", {
         class: "small muted",
         style: "margin:8px 0 4px;font-weight:700;color:#cfe0ff",
       }, `${gr}학년`));
       const grid = el("div", { class: "progress-grid" });
+      const CPG = Number(cpgMap[String(gr)] || 10);
       for (let c = 1; c <= CPG; c++) {
         const cid = `${gr}-${c}`;
         const done = scoresObj[cid] != null;
@@ -188,18 +374,24 @@ function renderLive() {
       card.appendChild(el("div", { class: "rank-empty" }, "아직 입력된 기록이 없습니다."));
     } else {
       const table = el("table", { class: "rank-table", style: "margin-top:10px" });
-      table.appendChild(el("thead", {}, el("tr", {}, [
+      const headCols = [
         el("th", {}, "등수"),
         el("th", {}, "반"),
         el("th", {}, g.scoreType === "time" ? "기록" : "점수"),
-      ])));
+      ];
+      if (g.scoreType === "time") headCols.push(el("th", {}, "획득점수"));
+      table.appendChild(el("thead", {}, el("tr", {}, headCols)));
       const tbody = el("tbody");
       for (const r of ranked) {
-        tbody.appendChild(el("tr", {}, [
+        const cols = [
           el("td", { class: `rank rank-${r.rank <= 3 ? r.rank : ""}` }, `${r.rank}위`),
           el("td", {}, formatClassId(r.classId)),
           el("td", {}, scoreToText(g.scoreType, r.value)),
-        ]));
+        ];
+        if (g.scoreType === "time") {
+          cols.push(el("td", { style: "font-weight:800" }, `${scoreMap[r.classId] ?? 0}점`));
+        }
+        tbody.appendChild(el("tr", {}, cols));
       }
       table.appendChild(tbody);
       card.appendChild(table);
@@ -213,28 +405,35 @@ function renderTotal() {
   const wrap = document.getElementById("totalRank");
   const games = sortedGames();
   const ids = allClassIds();
-  const TC = ids.length;
+  const cpgMap = classesPerGradeMap();
 
   const totals = {};
   for (const cid of ids) totals[cid] = { classId: cid, total: 0, details: [] };
 
   for (const [gid, g] of games) {
     const scoresObj = getState().scores[gid] || {};
-    const list = ids.map((cid) => ({
-      classId: cid,
-      value: scoresObj[cid]?.value ?? null,
-    }));
-    const ranked = computeRanks(list.filter(x => x.value != null), g.scoreType);
-    for (const r of ranked) {
-      const awarded = Math.max(0, TC - r.rank + 1);
-      totals[r.classId].total += awarded;
-      totals[r.classId].details.push({ game: g.name, rank: r.rank, pts: awarded });
+    const scopeIds = getScopeClassIds(g, ids);
+    const { scoreMap, ranked } = computeScores(g, scoresObj, scopeIds, cpgMap, "last");
+    const rankMap = {};
+    for (const r of ranked) rankMap[r.classId] = r.rank;
+
+    for (const cid of scopeIds) {
+      if (!(cid in totals)) continue;
+      const pts = scoreMap[cid] ?? 0;
+      totals[cid].total += pts;
+      if (pts > 0) {
+        totals[cid].details.push({
+          game: g.name,
+          rank: rankMap[cid] || null,
+          pts,
+          type: g.scoreType,
+        });
+      }
     }
   }
 
   const arr = Object.values(totals).sort((a, b) => {
     if (b.total !== a.total) return b.total - a.total;
-    // 동점은 학년-반 오름차순
     const pa = parseClassId(a.classId), pb = parseClassId(b.classId);
     return pa.grade - pb.grade || pa.classNum - pb.classNum;
   });
@@ -262,7 +461,7 @@ function renderTotal() {
   const tbody = el("tbody");
   for (const t of arr) {
     const detail = t.details.length
-      ? t.details.map(d => `${d.game} ${d.rank}위(+${d.pts})`).join(", ")
+      ? t.details.map(d => d.rank ? `${d.game} ${d.rank}위(+${d.pts})` : `${d.game}(+${d.pts})`).join(", ")
       : "-";
     tbody.appendChild(el("tr", {}, [
       el("td", { class: `rank rank-${t.rank <= 3 ? t.rank : ""}` }, `${t.rank}위`),

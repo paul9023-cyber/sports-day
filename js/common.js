@@ -65,11 +65,20 @@ export function parseClassId(cid) {
   return { grade: g, classNum: c };
 }
 
-// 등수 계산 (scoreType: "time"→낮을수록 좋음, "points"→높을수록 좋음)
-export function computeRanks(entries, scoreType) {
+// 등수 계산
+// game: {scoreType, timeOrder?}  — timeOrder는 time 전용 ("asc"=짧은게 1등 / "desc"=긴게 1등)
+// points 게임은 "항상 높을수록 좋음"
+export function computeRanks(entries, game) {
+  // 이전 버전 호환: scoreType 문자열만 넘어온 경우
+  let scoreType, timeOrder;
+  if (typeof game === "string") { scoreType = game; timeOrder = "asc"; }
+  else { scoreType = game.scoreType; timeOrder = game.timeOrder || "asc"; }
+
   const valid = entries.filter(e => e.value != null);
   valid.sort((a, b) => {
-    if (scoreType === "time") return a.value - b.value;
+    if (scoreType === "time") {
+      return timeOrder === "desc" ? (b.value - a.value) : (a.value - b.value);
+    }
     return b.value - a.value;
   });
   let prev = null, rank = 0, realIdx = 0;
@@ -80,6 +89,86 @@ export function computeRanks(entries, scoreType) {
     prev = e.value;
   }
   return valid;
+}
+
+/**
+ * 등수를 "획득 점수"로 환산.
+ * - points 게임: 사용자가 입력한 값을 그대로 점수로 사용 (rawValue 사용)
+ * - time 게임 + scope="grade": 해당 학년의 반 수 N → 1등=N*10, N등=10 (간격 10)
+ * - time 게임 + scope="all" : 1등=180, 2등=170, …, 18등=10 (고정 테이블, 바닥 10)
+ * 존재하지 않는 반/기록 없음 → 최저점(10점) 또는 0점은 호출자가 결정
+ */
+export function rankToScore(rank, game, ctx = {}) {
+  if (!game) return 0;
+  if (game.scoreType !== "time") {
+    // points 게임: 입력한 값 자체가 점수 (rawValue 전달 필요)
+    return Number(ctx.rawValue || 0);
+  }
+  if (game.scope === "grade") {
+    const N = Math.max(1, Number(ctx.classesInGrade || 10));
+    const s = (N - Number(rank) + 1) * 10;
+    return Math.max(10, s);
+  }
+  // scope === "all" : 18칸 고정 테이블
+  const s = (19 - Number(rank)) * 10;
+  return Math.max(10, Math.min(180, s));
+}
+
+/**
+ * 주어진 게임에서 각 반이 받는 "최종 점수"를 계산해 Map으로 반환.
+ * key=classId, value=점수(없으면 0 또는 최저점)
+ * opts: { classIdsInScope: string[] (선택), classesPerGradeMap: {g: N} }
+ * tieRule: "last" → 미제출 반은 최저점 10 부여, "none" → 0 부여
+ */
+export function computeScores(game, scoresObj, allIdsInScope, cpgMap, tieRule = "last") {
+  const submitted = [];
+  for (const cid of allIdsInScope) {
+    const v = scoresObj?.[cid]?.value;
+    if (v != null) submitted.push({ classId: cid, value: v });
+  }
+  const ranked = computeRanks(submitted, game);
+  const map = {};
+
+  if (game.scoreType === "points") {
+    for (const r of ranked) {
+      map[r.classId] = Number(r.value || 0);
+    }
+    // 미제출: 0 (points는 꼬리 등수 개념 안 씀)
+    for (const cid of allIdsInScope) if (!(cid in map)) map[cid] = 0;
+    return { scoreMap: map, ranked };
+  }
+
+  // time 게임
+  let classesInGrade = 10;
+  if (game.scope === "grade" && game.gradeNum) {
+    classesInGrade = Number(cpgMap?.[String(game.gradeNum)] || 10);
+  }
+  for (const r of ranked) {
+    map[r.classId] = rankToScore(r.rank, game, { classesInGrade });
+  }
+  // 미제출 반 처리
+  const lastScore = tieRule === "last" ? 10 : 0;
+  for (const cid of allIdsInScope) {
+    if (!(cid in map)) map[cid] = lastScore;
+  }
+  return { scoreMap: map, ranked };
+}
+
+// 게임이 어떤 반들을 대상으로 하는지 반환
+// - points 또는 time/all: 모든 반
+// - time/grade: 해당 학년의 반들만
+export function getScopeClassIds(game, allIds) {
+  if (game.scope === "grade" && game.gradeNum) {
+    const g = Number(game.gradeNum);
+    return allIds.filter(cid => Number(cid.split("-")[0]) === g);
+  }
+  return allIds.slice();
+}
+
+// 게임 설명 라벨
+export function gameScopeLabel(game) {
+  if (game.scope === "grade" && game.gradeNum) return `${game.gradeNum}학년`;
+  return "전체";
 }
 
 export function roleLabel(role) {

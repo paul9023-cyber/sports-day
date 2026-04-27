@@ -3,21 +3,58 @@
 // - fetch()로 변경 요청을 보냅니다.
 
 const target = new EventTarget();
-let _state = { school: "", grades: 3, classesPerGrade: 10, games: {}, scores: {} };
+let _state = { school: "", grades: 3, classesPerGrade: { "1": 10, "2": 10, "3": 10 }, games: {}, scores: {} };
 let _conn = false;
 let _es = null;
 
 export function getState() { return _state; }
 export function grades() { return Number(_state.grades || 3); }
-export function classesPerGrade() { return Number(_state.classesPerGrade || 10); }
-export function totalClasses() { return grades() * classesPerGrade(); }
+
+// 이전 버전 호환: classesPerGrade가 숫자로 들어올 수도 있으므로 dict로 변환
+function _cpgDict() {
+  const raw = _state.classesPerGrade;
+  const g = grades();
+  const out = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (let i = 1; i <= g; i++) {
+      const v = Number(raw[i] ?? raw[String(i)] ?? 10);
+      out[String(i)] = Math.max(1, Math.min(30, v || 10));
+    }
+  } else {
+    const n = Math.max(1, Math.min(30, Number(raw) || 10));
+    for (let i = 1; i <= g; i++) out[String(i)] = n;
+  }
+  return out;
+}
+
+export function classesPerGradeMap() { return _cpgDict(); }
+export function classesForGrade(gr) {
+  const m = _cpgDict();
+  return Number(m[String(gr)] || 10);
+}
+export function totalClasses() {
+  const m = _cpgDict();
+  let sum = 0;
+  for (const k of Object.keys(m)) sum += Number(m[k] || 0);
+  return sum;
+}
 
 // 모든 classId를 학년순으로 반환: ["1-1","1-2",...,"3-10"]
 export function allClassIds() {
   const out = [];
+  const m = _cpgDict();
   for (let g = 1; g <= grades(); g++) {
-    for (let c = 1; c <= classesPerGrade(); c++) out.push(`${g}-${c}`);
+    const cpg = Number(m[String(g)] || 10);
+    for (let c = 1; c <= cpg; c++) out.push(`${g}-${c}`);
   }
+  return out;
+}
+
+// 특정 학년의 classId만
+export function classIdsForGrade(gr) {
+  const out = [];
+  const cpg = classesForGrade(gr);
+  for (let c = 1; c <= cpg; c++) out.push(`${gr}-${c}`);
   return out;
 }
 
@@ -56,7 +93,6 @@ function startSSE() {
   };
   _es.onerror = () => {
     setConn(false);
-    // EventSource가 자동 재연결하지만, 닫혔으면 수동 재시도
     if (_es && _es.readyState === EventSource.CLOSED) {
       setTimeout(startSSE, 2000);
     }
@@ -75,9 +111,16 @@ async function req(method, path, body) {
 
 export const api = {
   setSchool:    (name) => req("POST", "/api/school", { name }),
+  // classesPerGrade는 {"1":10,"2":8,...} 형태의 dict
   setStructure: (grades, classesPerGrade) =>
     req("POST", "/api/structure", { grades, classesPerGrade }),
-  addGame:    (name, scoreType) => req("POST", "/api/game", { name, scoreType }),
+  addGame:    (name, scoreType, opts = {}) =>
+    req("POST", "/api/game", {
+      name, scoreType,
+      scope: opts.scope || "all",
+      gradeNum: opts.gradeNum ?? null,
+      timeOrder: opts.timeOrder || "asc",
+    }),
   renameGame: (gid, name) => req("PATCH", `/api/game/${encodeURIComponent(gid)}`, { name }),
   deleteGame: (gid) => req("DELETE", `/api/game/${encodeURIComponent(gid)}`),
   submitScore: (gameId, classId, value) =>

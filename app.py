@@ -63,8 +63,13 @@ state_lock = threading.Lock()
 state = {
     "school": "",
     "grades": 3,              # 학년 수 (예: 3 → 1학년, 2학년, 3학년)
-    "classesPerGrade": 10,    # 각 학년의 반 수
-    "games": {},              # gameId: {name, scoreType, createdAt}
+    # 각 학년의 반 수 (학년별로 다를 수 있음). key는 문자열 학년번호.
+    # 예) {"1": 6, "2": 8, "3": 7}
+    "classesPerGrade": {"1": 10, "2": 10, "3": 10},
+    "games": {},              # gameId: {name, scoreType, scope, gradeNum, timeOrder, createdAt}
+                              #   scope: "all" | "grade"  (time 게임에서 점수 환산 기준)
+                              #   gradeNum: 1..grades  (scope=grade일 때)
+                              #   timeOrder: "asc"(짧은게 1등) | "desc"(긴게 1등) — time 게임 전용
     "scores": {},             # gameId: {classId(str): {value, classId, submittedAt}}
                               #   classId 형식: "G-C"  예) "1-5" = 1학년 5반
 }
@@ -86,12 +91,64 @@ def _upstash_call(command_parts, timeout=10):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _normalize_classes_per_grade(value, grades_count):
+    """int 또는 dict를 {grade_str: int} 형태로 정규화."""
+    out = {}
+    if isinstance(value, dict):
+        for k, v in value.items():
+            try:
+                n = int(v)
+                if n < 1: n = 1
+                if n > 30: n = 30
+                out[str(int(k))] = n
+            except Exception:
+                continue
+    else:
+        # 이전 버전 호환: 정수면 모든 학년에 동일 적용
+        try:
+            n = int(value)
+        except Exception:
+            n = 10
+        if n < 1: n = 1
+        if n > 30: n = 30
+        for g in range(1, grades_count + 1):
+            out[str(g)] = n
+    # 누락된 학년은 기본값 10으로 채움
+    for g in range(1, grades_count + 1):
+        out.setdefault(str(g), 10)
+    return out
+
+
+def _normalize_game(g):
+    """오래된 게임 레코드에 scope/gradeNum/timeOrder 기본값을 채워 넣음."""
+    scope = g.get("scope")
+    if scope not in ("all", "grade"):
+        scope = "all"
+    g["scope"] = scope
+    try:
+        g["gradeNum"] = int(g.get("gradeNum")) if g.get("gradeNum") else None
+    except Exception:
+        g["gradeNum"] = None
+    if g.get("scoreType") == "time":
+        to = g.get("timeOrder")
+        g["timeOrder"] = to if to in ("asc", "desc") else "asc"
+    else:
+        g.pop("timeOrder", None)
+    return g
+
+
 def _apply_loaded(data):
     """불러온 dict를 state에 반영."""
     state["school"] = data.get("school", "")
     state["grades"] = int(data.get("grades", 3))
-    state["classesPerGrade"] = int(data.get("classesPerGrade", 10))
-    state["games"] = data.get("games", {}) or {}
+    state["classesPerGrade"] = _normalize_classes_per_grade(
+        data.get("classesPerGrade"), state["grades"]
+    )
+    games = data.get("games", {}) or {}
+    for gid, g in list(games.items()):
+        if isinstance(g, dict):
+            _normalize_game(g)
+    state["games"] = games
     state["scores"] = data.get("scores", {}) or {}
 
 
@@ -184,7 +241,10 @@ def _valid_class_id(cid):
         if len(parts) != 2:
             return False
         g = int(parts[0]); c = int(parts[1])
-        return 1 <= g <= state["grades"] and 1 <= c <= state["classesPerGrade"]
+        if not (1 <= g <= state["grades"]):
+            return False
+        max_c = int(state["classesPerGrade"].get(str(g), 10))
+        return 1 <= c <= max_c
     except Exception:
         return False
 
@@ -332,23 +392,39 @@ class Handler(SimpleHTTPRequestHandler):
 
                 elif path == "/api/structure" and method == "POST":
                     g = int(body.get("grades", state["grades"]))
-                    c = int(body.get("classesPerGrade", state["classesPerGrade"]))
-                    if 1 <= g <= 12 and 1 <= c <= 30:
+                    cpg_in = body.get("classesPerGrade", state["classesPerGrade"])
+                    if 1 <= g <= 12:
                         state["grades"] = g
-                        state["classesPerGrade"] = c
+                        state["classesPerGrade"] = _normalize_classes_per_grade(cpg_in, g)
                     else:
                         changed = False
 
                 elif path == "/api/game" and method == "POST":
                     name = str(body.get("name", ""))[:60].strip()
                     stype = body.get("scoreType", "points")
+                    scope = body.get("scope", "all")
+                    if scope not in ("all", "grade"): scope = "all"
+                    grade_num = body.get("gradeNum")
+                    try:
+                        grade_num = int(grade_num) if grade_num is not None else None
+                    except Exception:
+                        grade_num = None
+                    if scope == "grade" and not (grade_num and 1 <= grade_num <= state["grades"]):
+                        scope = "all"; grade_num = None
+                    time_order = body.get("timeOrder", "asc")
+                    if time_order not in ("asc", "desc"): time_order = "asc"
                     if name and stype in ("points", "time"):
                         gid = new_id()
-                        state["games"][gid] = {
+                        rec = {
                             "name": name,
                             "scoreType": stype,
+                            "scope": scope,
+                            "gradeNum": grade_num if scope == "grade" else None,
                             "createdAt": int(time.time() * 1000),
                         }
+                        if stype == "time":
+                            rec["timeOrder"] = time_order
+                        state["games"][gid] = rec
                     else:
                         changed = False
 
@@ -368,7 +444,19 @@ class Handler(SimpleHTTPRequestHandler):
                     gid = body.get("gameId")
                     cid = str(body.get("classId", "")).strip()
                     value = body.get("value")
-                    if gid in state["games"] and _valid_class_id(cid) and value is not None:
+                    ok = (gid in state["games"] and _valid_class_id(cid) and value is not None)
+                    if ok:
+                        # 학년 범위 게임은 해당 학년의 반만 제출 가능
+                        game = state["games"][gid]
+                        if game.get("scope") == "grade":
+                            gn = game.get("gradeNum")
+                            try:
+                                class_grade = int(cid.split("-")[0])
+                                if gn and class_grade != int(gn):
+                                    ok = False
+                            except Exception:
+                                ok = False
+                    if ok:
                         state["scores"].setdefault(gid, {})[cid] = {
                             "value": value,
                             "classId": cid,

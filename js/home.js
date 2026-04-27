@@ -1,11 +1,58 @@
 import { api, onState, onConnection } from "./api.js";
 import { renderQRCode } from "./qr.js";
 
+/* ---------- 본부 접속 비밀번호 ---------- */
+const HQ_PASSWORD = "5350";
+const HQ_AUTH_KEY = "hq_auth_ok";
+
+function isHqAuthed() {
+  return sessionStorage.getItem(HQ_AUTH_KEY) === "1";
+}
+
+function openHqPwd() {
+  const modal = document.getElementById("hqPwdModal");
+  const input = document.getElementById("hqPwdInput");
+  const err = document.getElementById("hqPwdError");
+  err.textContent = "";
+  input.value = "";
+  modal.classList.remove("hidden");
+  setTimeout(() => input.focus(), 50);
+}
+function closeHqPwd() {
+  document.getElementById("hqPwdModal").classList.add("hidden");
+}
+function tryHqPwd() {
+  const v = document.getElementById("hqPwdInput").value;
+  const err = document.getElementById("hqPwdError");
+  if (v === HQ_PASSWORD) {
+    sessionStorage.setItem(HQ_AUTH_KEY, "1");
+    closeHqPwd();
+    location.href = "./hq.html";
+  } else {
+    err.textContent = "비밀번호가 올바르지 않습니다.";
+    const input = document.getElementById("hqPwdInput");
+    input.value = "";
+    input.focus();
+  }
+}
+document.getElementById("hqPwdOk")?.addEventListener("click", tryHqPwd);
+document.getElementById("hqPwdCancel")?.addEventListener("click", closeHqPwd);
+document.getElementById("hqPwdInput")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") tryHqPwd();
+});
+document.getElementById("hqPwdModal")?.addEventListener("click", (e) => {
+  if (e.target.id === "hqPwdModal") closeHqPwd();
+});
+
 document.querySelectorAll(".role-card").forEach((btn) => {
   btn.addEventListener("click", () => {
     const role = btn.dataset.role;
-    if (role === "hq") location.href = "./hq.html";
-    else location.href = "./judge.html";
+    if (role === "hq") {
+      if (isHqAuthed()) location.href = "./hq.html";
+      else openHqPwd();
+    } else {
+      location.href = "./judge.html";
+    }
   });
 });
 
