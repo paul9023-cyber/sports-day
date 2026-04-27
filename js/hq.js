@@ -26,17 +26,33 @@ $$("#tabs button").forEach(btn => {
   });
 });
 
-/* ---------------- 상태 갱신 시 다시 그림 ---------------- */
+/* ---------------- 상태 갱신 시 다시 그림 ----------------
+   주의: 사용자가 입력 중인 칸은 절대 자동으로 덮어쓰지 않음.
+   초기 1회만 서버 값으로 채워주고, 그 이후엔 사용자 마음대로. */
+let _initFilled = { school: false, grades: false, perGrade: false };
+
 onState((s) => {
-  // 학교명
+  // 학교명: 처음 1회만 서버 값으로 채움. 그 후엔 사용자 입력 보존.
   const input = document.getElementById("schoolInput");
-  if (document.activeElement !== input) input.value = s.school || "";
+  if (input && !_initFilled.school && (s.school || "").length > 0) {
+    input.value = s.school;
+    _initFilled.school = true;
+  }
   document.getElementById("schoolPill").textContent = s.school || "학교 미설정";
 
-  // 학년/반 구성 입력
+  // 학년 수: 처음 1회만 서버 값으로 채움
   const gInput = document.getElementById("gradesInput");
-  if (document.activeElement !== gInput) gInput.value = s.grades || 3;
-  renderGradeClassInputs();
+  if (gInput && !_initFilled.grades) {
+    gInput.value = s.grades || 3;
+    _initFilled.grades = true;
+    renderGradeClassInputs(/*forceFromState=*/true);
+  }
+
+  // 학년별 반 입력: 처음 1회만 서버 값으로 채움. 그 후엔 사용자 입력을 절대 덮어쓰지 않음.
+  if (!_initFilled.perGrade) {
+    renderGradeClassInputs(/*forceFromState=*/true);
+    _initFilled.perGrade = true;
+  }
   updateStructureSummary();
 
   renderGameScopeGradeButtons();
@@ -45,17 +61,25 @@ onState((s) => {
   renderTotal();
 });
 
-/* ---------------- 학년별 반 수 입력 UI ---------------- */
-function renderGradeClassInputs() {
+/* ---------------- 학년별 반 수 입력 UI ----------------
+   forceFromState=true 일 때만 서버 값을 입력칸에 채움.
+   학년 수 input 변경 시에는 새로 추가된 학년만 채우고, 기존 칸은 사용자 입력 그대로 유지. */
+function renderGradeClassInputs(forceFromState = false) {
   const s = getState();
   const wrap = document.getElementById("gradeClassInputs");
   if (!wrap) return;
   const G = Number(document.getElementById("gradesInput").value || s.grades || 3);
   const cpg = s.classesPerGrade || {};
-  // 기존 포커스 보존
+
+  // 현재 화면에 있는 입력칸 값을 먼저 수집 (사용자가 입력 중이라면 그 값을 보존)
+  const existing = {};
+  wrap.querySelectorAll(".grade-class-input").forEach((el) => {
+    const k = el.dataset.grade;
+    if (k) existing[k] = el.value;
+  });
+
   const active = document.activeElement;
-  const activeGrade = active?.dataset?.grade;
-  const activeVal = active?.value;
+  const activeGrade = active?.classList?.contains("grade-class-input") ? active.dataset.grade : null;
 
   wrap.innerHTML = "";
   const row = document.createElement("div");
@@ -63,7 +87,14 @@ function renderGradeClassInputs() {
   row.style.flexWrap = "wrap";
   row.style.gap = "10px";
   for (let g = 1; g <= G; g++) {
-    const val = cpg[String(g)] ?? 10;
+    let val;
+    if (forceFromState) {
+      val = cpg[String(g)] ?? 10;
+    } else if (existing[String(g)] !== undefined) {
+      val = existing[String(g)]; // 사용자 입력 보존
+    } else {
+      val = cpg[String(g)] ?? 10; // 새로 추가된 학년은 서버값(또는 10)
+    }
     const cell = document.createElement("div");
     cell.style.flex = "1 1 110px";
     cell.innerHTML = `
@@ -74,13 +105,11 @@ function renderGradeClassInputs() {
   }
   wrap.appendChild(row);
 
-  // 포커스 복원
   if (activeGrade) {
     const el2 = wrap.querySelector(`input[data-grade="${activeGrade}"]`);
-    if (el2) { el2.focus(); if (activeVal != null) el2.value = activeVal; }
+    if (el2) el2.focus();
   }
 
-  // 입력 시 요약 갱신
   wrap.querySelectorAll(".grade-class-input").forEach(inp => {
     inp.addEventListener("input", updateStructureSummary);
   });
@@ -120,24 +149,37 @@ document.getElementById("gradesInput")?.addEventListener("input", () => {
 });
 
 /* ---------------- 학교명 저장 ---------------- */
-document.getElementById("saveSchool").addEventListener("click", async () => {
+document.getElementById("saveSchool").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
   const v = document.getElementById("schoolInput").value.trim();
-  if (!v) { toast("학교 이름을 입력하세요"); return; }
-  try { await api.setSchool(v); toast("학교 이름 저장됨"); }
-  catch (e) { toast("저장 실패"); }
+  if (!v) { alert("학교 이름을 입력하세요"); return; }
+  const oldText = btn.textContent;
+  btn.textContent = "저장 중...";
+  btn.disabled = true;
+  try {
+    await api.setSchool(v);
+    btn.textContent = "✓ 저장됨";
+    toast(`"${v}" 저장 완료`);
+    setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+  } catch (e) {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    alert("저장 실패: " + (e?.message || e));
+  }
 });
 
 /* ---------------- 학년/반 구성 저장 ---------------- */
-document.getElementById("saveStructure").addEventListener("click", async () => {
+document.getElementById("saveStructure").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
   const g = Number(document.getElementById("gradesInput").value);
   if (!(g >= 1 && g <= 12)) {
-    toast("학년 수는 1~12 범위로 입력하세요"); return;
+    alert("학년 수는 1~12 범위로 입력하세요"); return;
   }
   const m = collectClassesPerGrade();
   for (let i = 1; i <= g; i++) {
     const n = Number(m[String(i)] || 0);
     if (!(n >= 1 && n <= 30)) {
-      toast(`${i}학년 반 수는 1~30 범위로 입력하세요`); return;
+      alert(`${i}학년 반 수는 1~30 범위로 입력하세요`); return;
     }
   }
   const s = getState();
@@ -154,10 +196,20 @@ document.getElementById("saveStructure").addEventListener("click", async () => {
     );
     if (!ok) return;
   }
+  const oldText = btn.textContent;
+  btn.textContent = "저장 중...";
+  btn.disabled = true;
   try {
     await api.setStructure(g, m);
-    toast("학년/반 구성 저장됨");
-  } catch (e) { toast("저장 실패"); }
+    btn.textContent = "✓ 저장됨";
+    const summary = Object.keys(m).map(k => `${k}학년 ${m[k]}반`).join(", ");
+    toast(`구성 저장: ${summary}`);
+    setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+  } catch (e) {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    alert("저장 실패: " + (e?.message || e));
+  }
 });
 
 /* ---------------- 종목 추가 ---------------- */
@@ -218,23 +270,32 @@ function renderGameScopeGradeButtons() {
   }
 }
 
-document.getElementById("addGame").addEventListener("click", async () => {
+document.getElementById("addGame").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
   const name = document.getElementById("gameName").value.trim();
-  if (!name) { toast("종목 이름을 입력하세요"); return; }
+  if (!name) { alert("종목 이름을 입력하세요"); return; }
   const opts = {};
   if (newGameType === "time") {
     opts.scope = newGameScope;
     opts.gradeNum = newGameScope === "grade" ? newGameGrade : null;
     opts.timeOrder = newGameOrder;
   } else {
-    // points 게임은 항상 전체
     opts.scope = "all"; opts.gradeNum = null;
   }
+  const oldText = btn.textContent;
+  btn.textContent = "추가 중...";
+  btn.disabled = true;
   try {
     await api.addGame(name, newGameType, opts);
     document.getElementById("gameName").value = "";
-    toast("종목 추가됨");
-  } catch (e) { toast("추가 실패"); }
+    btn.textContent = "✓ 추가됨";
+    toast(`"${name}" 추가됨`);
+    setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+  } catch (e) {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    alert("추가 실패: " + (e?.message || e));
+  }
 });
 
 /* ---------------- 등록된 종목 리스트 ---------------- */
