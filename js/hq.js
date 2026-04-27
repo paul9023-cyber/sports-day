@@ -26,6 +26,12 @@ $$("#tabs button").forEach(btn => {
   });
 });
 
+/* ---------------- 종목 추가용 상태 (renderGameScopeGradeButtons에서 참조하므로 onState 이전에 선언 필요!) ---------------- */
+let newGameType = "points";
+let newGameScope = "all";
+let newGameGrade = null;
+let newGameOrder = "asc";
+
 /* ---------------- 상태 갱신 시 다시 그림 ----------------
    주의: 사용자가 입력 중인 칸은 절대 자동으로 덮어쓰지 않음.
    초기 1회만 서버 값으로 채워주고, 그 이후엔 사용자 마음대로. */
@@ -213,10 +219,7 @@ document.getElementById("saveStructure").addEventListener("click", async (ev) =>
 });
 
 /* ---------------- 종목 추가 ---------------- */
-let newGameType = "points";
-let newGameScope = "all";
-let newGameGrade = null;
-let newGameOrder = "asc";
+// (newGameType / newGameScope / newGameGrade / newGameOrder 변수는 위쪽에 선언되어 있음)
 
 function updateGameFormVisibility() {
   document.getElementById("timeOptions").classList.toggle("hidden", newGameType !== "time");
@@ -692,3 +695,17 @@ function hqCloseModal() {
 hqShareBtn?.addEventListener("click", hqOpenModal);
 hqCloseBtn?.addEventListener("click", hqCloseModal);
 hqModal?.addEventListener("click", (e) => { if (e.target === hqModal) hqCloseModal(); });
+
+/* ---------------- JS 정상 로드 확인 마커 ----------------
+   상단 학교 pill 옆에 ✓를 붙여서, 이 파일이 끝까지 무사히 로드됐음을 시각적으로 알림.
+   화면에 ✓가 보이지 않으면 = JS 어딘가에서 에러가 났다는 뜻 (위쪽 빨간 에러 박스 확인). */
+try {
+  const _pill = document.getElementById("schoolPill");
+  if (_pill) {
+    const ok = document.createElement("span");
+    ok.textContent = " ✓JS";
+    ok.style.cssText = "color:#86efac;font-size:11px;margin-left:4px;font-weight:700;";
+    ok.title = "JS 정상 로드됨";
+    _pill.appendChild(ok);
+  }
+} catch (e) {}
