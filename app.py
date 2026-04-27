@@ -253,6 +253,20 @@ def _valid_class_id(cid):
 # HTTP 핸들러
 # --------------------------------------------------------------
 class Handler(SimpleHTTPRequestHandler):
+    # 모든 텍스트 파일에 명시적으로 UTF-8 charset 지정 (한글 깨짐 방지)
+    extensions_map = {
+        **SimpleHTTPRequestHandler.extensions_map,
+        ".html": "text/html; charset=utf-8",
+        ".htm":  "text/html; charset=utf-8",
+        ".js":   "text/javascript; charset=utf-8",
+        ".mjs":  "text/javascript; charset=utf-8",
+        ".css":  "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".txt":  "text/plain; charset=utf-8",
+        ".svg":  "image/svg+xml; charset=utf-8",
+        ".md":   "text/markdown; charset=utf-8",
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
@@ -263,7 +277,6 @@ class Handler(SimpleHTTPRequestHandler):
     # 정적 파일(HTML/JS/CSS 등)도 캐시되지 않도록 헤더 강제 — 모바일 브라우저 캐시 문제 방지
     def end_headers(self):
         try:
-            ct = self.headers.get("Content-Type", "") if hasattr(self, "headers") else ""
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Pragma", "no-cache")
             self.send_header("Expires", "0")
