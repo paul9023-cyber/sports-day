@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="우리동네 체육대회" />
-  <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+  <link rel="icon" type="image/png" href="./icons/logo.png" />
   <title>우리동네 체육대회</title>
   <link rel="stylesheet" href="./css/style.css" />
 </head>
@@ -15,7 +15,7 @@
   <div class="home-wrap">
     <div class="home-hero">
       <div class="home-logo">
-        <img src="./icons/icon.svg" alt="로고" />
+        <img src="./icons/logo.png" alt="로고" />
       </div>
       <h1>우리동네<br/>체육대회</h1>
       <p class="home-school" id="homeSchool">학교명 불러오는 중…</p>
@@ -47,6 +47,23 @@
       <button id="showConnectBtn" class="btn btn-ghost" style="font-size:13px;padding:10px 14px;">
         📱 휴대폰으로 접속하기
       </button>
+    </div>
+  </div>
+
+  <!-- 본부 비밀번호 모달 -->
+  <div id="hqPwdModal" class="modal-backdrop hidden" style="align-items:center;">
+    <div class="modal" style="max-width: 360px; text-align:center;">
+      <h3 style="margin:0 0 6px">본부 접속</h3>
+      <p class="small muted" style="margin:0 0 14px">관리자 비밀번호를 입력하세요.</p>
+      <input id="hqPwdInput" type="password" inputmode="numeric" autocomplete="off" class="input"
+             maxlength="16" placeholder="비밀번호"
+             style="text-align:center;font-size:20px;letter-spacing:6px;" />
+      <div id="hqPwdError" class="small" style="color:#fca5a5;min-height:18px;margin-top:6px"></div>
+      <div class="spacer"></div>
+      <div class="row">
+        <button class="btn btn-ghost" id="hqPwdCancel">취소</button>
+        <button class="btn btn-success" id="hqPwdOk">확인</button>
+      </div>
     </div>
   </div>
 

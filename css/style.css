@@ -123,7 +123,15 @@ input, select, textarea { font-family: inherit; font-size: 16px; }
   display: flex; flex-direction: column;
 }
 .home-hero { padding: 48px 8px 24px; text-align: center; }
-.home-logo img { width: 84px; height: 84px; filter: drop-shadow(0 8px 24px rgba(96,165,250,.35)); }
+.home-logo { display: flex; justify-content: center; align-items: center; min-height: 96px; }
+.home-logo img {
+  max-width: 240px;
+  max-height: 96px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 24px rgba(96,165,250,.35));
+}
 .home-hero h1 {
   margin: 16px 0 8px;
   font-size: 34px; line-height: 1.1; letter-spacing: -0.5px;

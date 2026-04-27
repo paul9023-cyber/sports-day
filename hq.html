@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#1e3a8a" />
-  <link rel="icon" type="image/svg+xml" href="./icons/icon.svg" />
+  <link rel="icon" type="image/png" href="./icons/logo.png" />
   <title>우리동네 체육대회 (본부)</title>
   <link rel="stylesheet" href="./css/style.css" />
 </head>
@@ -85,18 +85,17 @@
       <div class="card">
         <h2>학년 / 반 구성</h2>
         <p class="small muted" style="margin:0 0 10px">
-          학년 수와 각 학년의 반 수를 설정하세요. (예: 3학년 × 10반 = 총 30개 반)
+          학년 수와 <b>각 학년별 반 수</b>를 설정하세요. 학년별로 다르게 설정할 수 있습니다.
         </p>
         <div class="row">
           <div>
             <div class="label">학년 수</div>
             <input id="gradesInput" class="input" type="number" min="1" max="12" />
           </div>
-          <div>
-            <div class="label">각 학년의 반 수</div>
-            <input id="classesPerGradeInput" class="input" type="number" min="1" max="30" />
-          </div>
         </div>
+        <div class="spacer"></div>
+        <div class="label">각 학년의 반 수</div>
+        <div id="gradeClassInputs"></div>
         <div class="spacer"></div>
         <div class="row">
           <div class="small muted" id="structureSummary" style="padding:10px 0;">-</div>
@@ -108,11 +107,36 @@
         <h2>종목 추가</h2>
         <input id="gameName" class="input" placeholder="종목 이름 (예: 이어달리기)" maxlength="30" />
         <div class="spacer"></div>
+
         <div class="label">점수 방식</div>
         <div class="seg" id="gameTypeSeg">
           <button data-type="points" class="active">점수 입력 (10~180점)</button>
-          <button data-type="time">Time lap (분:초.밀리)</button>
+          <button data-type="time">Time lap (시간 기록)</button>
         </div>
+
+        <!-- Time lap 선택 시 보이는 옵션 -->
+        <div id="timeOptions" class="hidden">
+          <div class="spacer"></div>
+          <div class="label">참가 범위</div>
+          <div class="seg" id="gameScopeSeg">
+            <button data-scope="all" class="active">전체 (10~180점)</button>
+            <button data-scope="grade">학년별 (10~60점)</button>
+          </div>
+
+          <div id="gameGradePicker" class="hidden">
+            <div class="spacer"></div>
+            <div class="label">어느 학년?</div>
+            <div class="seg" id="gameGradeSeg"></div>
+          </div>
+
+          <div class="spacer"></div>
+          <div class="label">등수 기준</div>
+          <div class="seg" id="gameOrderSeg">
+            <button data-order="asc" class="active">빠른 순 1등 (달리기/계주)</button>
+            <button data-order="desc">느린 순 1등 (버티기)</button>
+          </div>
+        </div>
+
         <div class="spacer"></div>
         <button class="btn btn-block btn-success" id="addGame">＋ 종목 추가</button>
       </div>

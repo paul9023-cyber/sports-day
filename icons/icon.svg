@@ -11,14 +11,14 @@
   </defs>
   <rect width="512" height="512" rx="112" fill="url(#bg)"/>
   <g transform="translate(256 256)">
-    <!-- ¬ø -->
+    <!-- ï¿½ï¿½ -->
     <path d="M-90 -170 L-40 -40 L0 -70 L40 -40 L90 -170 Z" fill="#ef4444" opacity="0.95"/>
     <path d="M-90 -170 L-40 -40 L-20 -60 L-70 -170 Z" fill="#b91c1c"/>
     <path d="M90 -170 L40 -40 L20 -60 L70 -170 Z" fill="#b91c1c"/>
-    <!-- Tì -->
+    <!-- Tï¿½ -->
     <circle r="120" fill="url(#medal)" stroke="#b45309" stroke-width="6"/>
     <circle r="92" fill="none" stroke="#ffffff" stroke-width="4" opacity="0.35"/>
-    <!-- +/Ä -->
+    <!-- +ï¿½/ï¿½ -->
     <text text-anchor="middle" y="34" font-size="150" font-family="Arial Black, Helvetica, sans-serif" fill="#7c2d12" font-weight="900">1</text>
   </g>
 </svg>
