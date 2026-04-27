@@ -1,305 +1,694 @@
-/*!
- * 작은 QR 코드 생성기 (Byte 모드, 오류정정 L, ISO/IEC 18004 준거)
- * URL 같은 짧은 ASCII 문자열(최대 ~230자) 생성용으로 충분합니다.
- * 외부 의존성 없음. MIT 라이선스 기반으로 자체 구현.
- */
+import { api, getState, onState, onConnection, grades, classesPerGradeMap, classesForGrade, allClassIds, classIdsForGrade, totalClasses } from "./api.js";
+import { $, $$, el, toast, formatTime, scoreToText, computeRanks, computeScores, getScopeClassIds, gameScopeLabel, confirmBox, formatClassId, parseClassId } from "./common.js";
+import { renderQRCode } from "./qr.js";
 
-function bchTypeInfo(data) {
-  let d = data << 10;
-  for (let i = 0; i < 5; i++) {
-    if (d >>> (15 - 1 - i) & 1) d ^= 0x537 << (5 - 1 - i);
-  }
-  return ((data << 10) | d) ^ 0x5412;
+/* ---------------- 비밀번호 게이트 ---------------- */
+if (sessionStorage.getItem("hq_auth_ok") !== "1") {
+  // 인증 안 됐으면 홈으로 돌려보냄
+  location.replace("./index.html");
 }
 
-// Galois Field
-const EXP = new Array(512), LOG = new Array(256);
-(function initGF(){
-  let x = 1;
-  for (let i = 0; i < 255; i++) {
-    EXP[i] = x;
-    LOG[x] = i;
-    x <<= 1;
-    if (x & 0x100) x ^= 0x11D;
+/* ---------------- 연결 표시 ---------------- */
+onConnection((online) => {
+  const t = document.getElementById("connText");
+  t.textContent = online ? "● 실시간 연결됨" : "● 연결 대기 중";
+  t.style.color = online ? "#86efac" : "#fca5a5";
+});
+
+/* ---------------- 탭 ---------------- */
+$$("#tabs button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    $$("#tabs button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    ["setup","live","total"].forEach(t => {
+      document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== btn.dataset.tab);
+    });
+  });
+});
+
+/* ---------------- 상태 갱신 시 다시 그림 ----------------
+   주의: 사용자가 입력 중인 칸은 절대 자동으로 덮어쓰지 않음.
+   초기 1회만 서버 값으로 채워주고, 그 이후엔 사용자 마음대로. */
+let _initFilled = { school: false, grades: false, perGrade: false };
+
+onState((s) => {
+  // 학교명: 처음 1회만 서버 값으로 채움. 그 후엔 사용자 입력 보존.
+  const input = document.getElementById("schoolInput");
+  if (input && !_initFilled.school && (s.school || "").length > 0) {
+    input.value = s.school;
+    _initFilled.school = true;
   }
-  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
-})();
+  document.getElementById("schoolPill").textContent = s.school || "학교 미설정";
 
-function gfMul(a, b) {
-  if (a === 0 || b === 0) return 0;
-  return EXP[LOG[a] + LOG[b]];
-}
+  // 학년 수: 처음 1회만 서버 값으로 채움
+  const gInput = document.getElementById("gradesInput");
+  if (gInput && !_initFilled.grades) {
+    gInput.value = s.grades || 3;
+    _initFilled.grades = true;
+    renderGradeClassInputs(/*forceFromState=*/true);
+  }
 
-function rsGeneratorPoly(ecLen) {
-  let poly = [1];
-  for (let i = 0; i < ecLen; i++) {
-    const next = new Array(poly.length + 1).fill(0);
-    for (let j = 0; j < poly.length; j++) {
-      next[j] ^= poly[j];
-      next[j + 1] ^= gfMul(poly[j], EXP[i]);
+  // 학년별 반 입력: 처음 1회만 서버 값으로 채움. 그 후엔 사용자 입력을 절대 덮어쓰지 않음.
+  if (!_initFilled.perGrade) {
+    renderGradeClassInputs(/*forceFromState=*/true);
+    _initFilled.perGrade = true;
+  }
+  updateStructureSummary();
+
+  renderGameScopeGradeButtons();
+  renderGameList();
+  renderLive();
+  renderTotal();
+});
+
+/* ---------------- 학년별 반 수 입력 UI ----------------
+   forceFromState=true 일 때만 서버 값을 입력칸에 채움.
+   학년 수 input 변경 시에는 새로 추가된 학년만 채우고, 기존 칸은 사용자 입력 그대로 유지. */
+function renderGradeClassInputs(forceFromState = false) {
+  const s = getState();
+  const wrap = document.getElementById("gradeClassInputs");
+  if (!wrap) return;
+  const G = Number(document.getElementById("gradesInput").value || s.grades || 3);
+  const cpg = s.classesPerGrade || {};
+
+  // 현재 화면에 있는 입력칸 값을 먼저 수집 (사용자가 입력 중이라면 그 값을 보존)
+  const existing = {};
+  wrap.querySelectorAll(".grade-class-input").forEach((el) => {
+    const k = el.dataset.grade;
+    if (k) existing[k] = el.value;
+  });
+
+  const active = document.activeElement;
+  const activeGrade = active?.classList?.contains("grade-class-input") ? active.dataset.grade : null;
+
+  wrap.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.flexWrap = "wrap";
+  row.style.gap = "10px";
+  for (let g = 1; g <= G; g++) {
+    let val;
+    if (forceFromState) {
+      val = cpg[String(g)] ?? 10;
+    } else if (existing[String(g)] !== undefined) {
+      val = existing[String(g)]; // 사용자 입력 보존
+    } else {
+      val = cpg[String(g)] ?? 10; // 새로 추가된 학년은 서버값(또는 10)
     }
-    poly = next;
+    const cell = document.createElement("div");
+    cell.style.flex = "1 1 110px";
+    cell.innerHTML = `
+      <div class="label">${g}학년 반 수</div>
+      <input class="input grade-class-input" type="number" min="1" max="30" data-grade="${g}" value="${val}" />
+    `;
+    row.appendChild(cell);
   }
-  return poly;
+  wrap.appendChild(row);
+
+  if (activeGrade) {
+    const el2 = wrap.querySelector(`input[data-grade="${activeGrade}"]`);
+    if (el2) el2.focus();
+  }
+
+  wrap.querySelectorAll(".grade-class-input").forEach(inp => {
+    inp.addEventListener("input", updateStructureSummary);
+  });
 }
 
-function rsEncode(data, ecLen) {
-  const gen = rsGeneratorPoly(ecLen);
-  const res = data.slice().concat(new Array(ecLen).fill(0));
-  for (let i = 0; i < data.length; i++) {
-    const coef = res[i];
-    if (coef === 0) continue;
-    for (let j = 0; j < gen.length; j++) {
-      res[i + j] ^= gfMul(gen[j], coef);
-    }
-  }
-  return res.slice(data.length);
-}
-
-// 버전별 용량(Byte 모드, L 수준)
-// index: version 1..10
-const BYTE_CAPACITY_L = [null, 17, 32, 53, 78, 106, 134, 154, 192, 230, 271];
-
-// 버전별 총 데이터 코드워드 수(L)
-const TOTAL_DATA_L = [null, 19, 34, 55, 80, 108, 136, 156, 194, 232, 274];
-
-// 버전별 EC 코드워드 수 per block (L)
-const EC_PER_BLOCK_L = [null, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18];
-
-// 버전별 블록 수 (L)
-const BLOCKS_L = [null, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4];
-
-function pickVersion(len) {
-  for (let v = 1; v <= 10; v++) {
-    if (len <= BYTE_CAPACITY_L[v]) return v;
-  }
-  throw new Error("데이터가 너무 깁니다 (QR)");
-}
-
-function encodeData(str, version) {
-  const bytes = new TextEncoder().encode(str);
-  const bits = [];
-  function push(n, count) {
-    for (let i = count - 1; i >= 0; i--) bits.push((n >>> i) & 1);
-  }
-  push(0b0100, 4); // Byte mode
-  const lenBits = version < 10 ? 8 : 16;
-  push(bytes.length, lenBits);
-  for (const b of bytes) push(b, 8);
-  // 종결자
-  const capacity = TOTAL_DATA_L[version] * 8;
-  for (let i = 0; i < 4 && bits.length < capacity; i++) bits.push(0);
-  while (bits.length % 8 !== 0) bits.push(0);
-  // 패딩 바이트
-  const pad = [0xEC, 0x11];
-  for (let i = 0; bits.length < capacity; i++) {
-    push(pad[i % 2], 8);
-  }
-  // bits → bytes
-  const data = [];
-  for (let i = 0; i < bits.length; i += 8) {
-    let b = 0;
-    for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
-    data.push(b);
-  }
-  return data;
-}
-
-function interleave(dataCodewords, version) {
-  const blocks = BLOCKS_L[version];
-  const totalData = TOTAL_DATA_L[version];
-  const ecLen = EC_PER_BLOCK_L[version];
-  const shortLen = Math.floor(totalData / blocks);
-  const longCount = totalData % blocks;
-
-  const dataBlocks = [];
-  const ecBlocks = [];
-  let offset = 0;
-  for (let i = 0; i < blocks; i++) {
-    const len = shortLen + (i >= blocks - longCount ? 1 : 0);
-    const d = dataCodewords.slice(offset, offset + len);
-    offset += len;
-    dataBlocks.push(d);
-    ecBlocks.push(rsEncode(d, ecLen));
-  }
-
-  const out = [];
-  const maxDataLen = shortLen + (longCount > 0 ? 1 : 0);
-  for (let i = 0; i < maxDataLen; i++) {
-    for (const b of dataBlocks) if (i < b.length) out.push(b[i]);
-  }
-  for (let i = 0; i < ecLen; i++) {
-    for (const b of ecBlocks) out.push(b[i]);
+function collectClassesPerGrade() {
+  const G = Number(document.getElementById("gradesInput").value || 3);
+  const out = {};
+  for (let g = 1; g <= G; g++) {
+    const inp = document.querySelector(`.grade-class-input[data-grade="${g}"]`);
+    let v = Number(inp?.value || 10);
+    if (!(v >= 1 && v <= 30)) v = 10;
+    out[String(g)] = v;
   }
   return out;
 }
 
-function getSize(version) { return 17 + version * 4; }
+function updateStructureSummary() {
+  const G = Number(document.getElementById("gradesInput").value || 3);
+  const m = collectClassesPerGrade();
+  let total = 0;
+  const parts = [];
+  for (let g = 1; g <= G; g++) {
+    const n = Number(m[String(g)] || 0);
+    total += n;
+    parts.push(`${g}학년 ${n}반`);
+  }
+  const el2 = document.getElementById("structureSummary");
+  if (el2) el2.textContent = `${parts.join(", ")} → 총 ${total}개 반`;
+}
 
-function buildMatrix(version, codewords) {
-  const size = getSize(version);
-  const m = Array.from({ length: size }, () => new Array(size).fill(null));
-  const reserved = Array.from({ length: size }, () => new Array(size).fill(false));
+// 학년 수가 바뀌면 반 입력 UI 재렌더
+document.getElementById("gradesInput")?.addEventListener("input", () => {
+  renderGradeClassInputs();
+  updateStructureSummary();
+  renderGameScopeGradeButtons();
+});
 
-  function setFinder(r, c) {
-    for (let i = -1; i <= 7; i++) for (let j = -1; j <= 7; j++) {
-      const y = r + i, x = c + j;
-      if (y < 0 || x < 0 || y >= size || x >= size) continue;
-      reserved[y][x] = true;
-      const inOuter = (i === 0 || i === 6 || j === 0 || j === 6) && i >= 0 && i <= 6 && j >= 0 && j <= 6;
-      const inInner = i >= 2 && i <= 4 && j >= 2 && j <= 4;
-      m[y][x] = inOuter || inInner ? 1 : 0;
+/* ---------------- 학교명 저장 ---------------- */
+document.getElementById("saveSchool").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  const v = document.getElementById("schoolInput").value.trim();
+  if (!v) { alert("학교 이름을 입력하세요"); return; }
+  const oldText = btn.textContent;
+  btn.textContent = "저장 중...";
+  btn.disabled = true;
+  try {
+    await api.setSchool(v);
+    btn.textContent = "✓ 저장됨";
+    toast(`"${v}" 저장 완료`);
+    setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+  } catch (e) {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    alert("저장 실패: " + (e?.message || e));
+  }
+});
+
+/* ---------------- 학년/반 구성 저장 ---------------- */
+document.getElementById("saveStructure").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  const g = Number(document.getElementById("gradesInput").value);
+  if (!(g >= 1 && g <= 12)) {
+    alert("학년 수는 1~12 범위로 입력하세요"); return;
+  }
+  const m = collectClassesPerGrade();
+  for (let i = 1; i <= g; i++) {
+    const n = Number(m[String(i)] || 0);
+    if (!(n >= 1 && n <= 30)) {
+      alert(`${i}학년 반 수는 1~30 범위로 입력하세요`); return;
     }
   }
-  setFinder(0, 0);
-  setFinder(0, size - 7);
-  setFinder(size - 7, 0);
-
-  // 타이밍 패턴
-  for (let i = 8; i < size - 8; i++) {
-    m[6][i] = m[i][6] = i % 2 === 0 ? 1 : 0;
-    reserved[6][i] = reserved[i][6] = true;
+  const s = getState();
+  const prevMap = s.classesPerGrade || {};
+  let shrink = g < Number(s.grades || g);
+  if (!shrink) {
+    for (let i = 1; i <= g; i++) {
+      if (Number(m[String(i)] || 0) < Number(prevMap[String(i)] || 0)) { shrink = true; break; }
+    }
   }
+  if (shrink && Object.keys(s.scores || {}).length > 0) {
+    const ok = await confirmBox(
+      `구성을 줄이면 범위를 벗어난 반의 점수는 화면에서 사라집니다. 그대로 저장할까요?\n(데이터는 남지만 표시되지 않습니다)`
+    );
+    if (!ok) return;
+  }
+  const oldText = btn.textContent;
+  btn.textContent = "저장 중...";
+  btn.disabled = true;
+  try {
+    await api.setStructure(g, m);
+    btn.textContent = "✓ 저장됨";
+    const summary = Object.keys(m).map(k => `${k}학년 ${m[k]}반`).join(", ");
+    toast(`구성 저장: ${summary}`);
+    setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+  } catch (e) {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    alert("저장 실패: " + (e?.message || e));
+  }
+});
 
-  // Alignment (v2~v10: 단일 패턴 at 크기-7, 크기-7)
-  if (version >= 2) {
-    const positions = {
-      2:[6,18], 3:[6,22], 4:[6,26], 5:[6,30], 6:[6,34],
-      7:[6,22,38], 8:[6,24,42], 9:[6,26,46], 10:[6,28,50]
-    }[version];
-    for (const r of positions) for (const c of positions) {
-      if ((r === 6 && c === 6) || (r === 6 && c === positions[positions.length-1]) || (r === positions[positions.length-1] && c === 6)) continue;
-      for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) {
-        const y = r + i, x = c + j;
-        reserved[y][x] = true;
-        const isOuter = Math.max(Math.abs(i), Math.abs(j)) === 2;
-        const isCenter = i === 0 && j === 0;
-        m[y][x] = isOuter || isCenter ? 1 : 0;
+/* ---------------- 종목 추가 ---------------- */
+let newGameType = "points";
+let newGameScope = "all";
+let newGameGrade = null;
+let newGameOrder = "asc";
+
+function updateGameFormVisibility() {
+  document.getElementById("timeOptions").classList.toggle("hidden", newGameType !== "time");
+  document.getElementById("gameGradePicker").classList.toggle("hidden",
+    !(newGameType === "time" && newGameScope === "grade"));
+}
+
+$$("#gameTypeSeg button").forEach(b => {
+  b.addEventListener("click", () => {
+    $$("#gameTypeSeg button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    newGameType = b.dataset.type;
+    updateGameFormVisibility();
+  });
+});
+
+$$("#gameScopeSeg button").forEach(b => {
+  b.addEventListener("click", () => {
+    $$("#gameScopeSeg button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    newGameScope = b.dataset.scope;
+    if (newGameScope === "grade" && !newGameGrade) newGameGrade = 1;
+    updateGameFormVisibility();
+    renderGameScopeGradeButtons();
+  });
+});
+
+$$("#gameOrderSeg button").forEach(b => {
+  b.addEventListener("click", () => {
+    $$("#gameOrderSeg button").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    newGameOrder = b.dataset.order;
+  });
+});
+
+function renderGameScopeGradeButtons() {
+  const G = Number(document.getElementById("gradesInput").value || grades());
+  const wrap = document.getElementById("gameGradeSeg");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (newGameGrade == null || newGameGrade > G) newGameGrade = 1;
+  for (let g = 1; g <= G; g++) {
+    const btn = document.createElement("button");
+    btn.textContent = `${g}학년`;
+    if (g === newGameGrade) btn.classList.add("active");
+    btn.addEventListener("click", () => {
+      newGameGrade = g;
+      renderGameScopeGradeButtons();
+    });
+    wrap.appendChild(btn);
+  }
+}
+
+document.getElementById("addGame").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  const name = document.getElementById("gameName").value.trim();
+  if (!name) { alert("종목 이름을 입력하세요"); return; }
+  const opts = {};
+  if (newGameType === "time") {
+    opts.scope = newGameScope;
+    opts.gradeNum = newGameScope === "grade" ? newGameGrade : null;
+    opts.timeOrder = newGameOrder;
+  } else {
+    opts.scope = "all"; opts.gradeNum = null;
+  }
+  const oldText = btn.textContent;
+  btn.textContent = "추가 중...";
+  btn.disabled = true;
+  try {
+    await api.addGame(name, newGameType, opts);
+    document.getElementById("gameName").value = "";
+    btn.textContent = "✓ 추가됨";
+    toast(`"${name}" 추가됨`);
+    setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1200);
+  } catch (e) {
+    btn.textContent = oldText;
+    btn.disabled = false;
+    alert("추가 실패: " + (e?.message || e));
+  }
+});
+
+/* ---------------- 등록된 종목 리스트 ---------------- */
+function sortedGames() {
+  return Object.entries(getState().games).sort(
+    (a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0)
+  );
+}
+
+function renderGameList() {
+  const wrap = document.getElementById("gameList");
+  const entries = sortedGames();
+  wrap.innerHTML = "";
+  if (entries.length === 0) {
+    wrap.appendChild(el("div", { class: "empty" }, "등록된 종목이 없습니다. 위에서 추가해 보세요."));
+    return;
+  }
+  const allIds = allClassIds();
+  for (const [gid, g] of entries) {
+    const scoresObj = getState().scores[gid] || {};
+    const scopeIds = getScopeClassIds(g, allIds);
+    const count = scopeIds.filter(cid => scoresObj[cid] != null).length;
+    const typePill = el("span", {
+      class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}`
+    }, g.scoreType === "time" ? "스톱워치" : "점수");
+    const scopePill = el("span", {
+      class: "pill",
+      style: g.scope === "grade"
+        ? "background:#f59e0b22;color:#fbbf24;margin-left:4px"
+        : "background:#38bdf822;color:#93c5fd;margin-left:4px",
+    }, gameScopeLabel(g));
+    const orderNote = (g.scoreType === "time")
+      ? ` · ${g.timeOrder === "desc" ? "느린 순 1등" : "빠른 순 1등"}`
+      : "";
+    const item = el("div", { class: "game-item" }, [
+      el("div", { class: "g-name" }, [
+        document.createTextNode(g.name + " "),
+        typePill,
+        scopePill,
+        el("div", { class: "small muted", style: "margin-top:4px" },
+          `입력 ${count}/${scopeIds.length}반${orderNote}`),
+      ]),
+      el("div", { class: "g-actions" }, [
+        el("button", { class: "icon-btn", title: "이름 수정",
+          onclick: () => renameGame(gid, g.name) }, "✎"),
+        el("button", { class: "icon-btn delete", title: "삭제",
+          onclick: () => deleteGame(gid, g.name) }, "✕"),
+      ]),
+    ]);
+    wrap.appendChild(item);
+  }
+}
+
+async function renameGame(gid, oldName) {
+  const nm = prompt("종목 이름 수정", oldName);
+  if (!nm || nm.trim() === "" || nm === oldName) return;
+  try { await api.renameGame(gid, nm.trim()); toast("수정됨"); }
+  catch (e) { toast("수정 실패"); }
+}
+
+async function deleteGame(gid, name) {
+  const ok = await confirmBox(`"${name}" 종목을 삭제할까요? 입력된 점수도 함께 삭제됩니다.`);
+  if (!ok) return;
+  try { await api.deleteGame(gid); toast("삭제됨"); }
+  catch (e) { toast("삭제 실패"); }
+}
+
+/* ---------------- 실시간 현황 ---------------- */
+function renderLive() {
+  const wrap = document.getElementById("liveList");
+  const entries = sortedGames();
+  wrap.innerHTML = "";
+  if (entries.length === 0) {
+    wrap.appendChild(el("div", { class: "card empty" }, "등록된 종목이 없습니다."));
+    return;
+  }
+  const G = grades();
+  const allIds = allClassIds();
+  const cpgMap = classesPerGradeMap();
+
+  for (const [gid, g] of entries) {
+    const scoresObj = getState().scores[gid] || {};
+    const scopeIds = getScopeClassIds(g, allIds);
+    const list = scopeIds.map((cid) => ({
+      classId: cid,
+      value: scoresObj[cid]?.value ?? null,
+    }));
+    const ranked = computeRanks(list.filter(x => x.value != null), g);
+
+    // 각 반이 실제로 얻는 점수 계산 (타임랩은 자동환산, 포인트는 입력값)
+    const { scoreMap } = computeScores(g, scoresObj, scopeIds, cpgMap, "last");
+
+    const card = el("div", { class: "card" });
+    const scopeBadge = el("span", {
+      class: "pill",
+      style: g.scope === "grade"
+        ? "background:#f59e0b22;color:#fbbf24"
+        : "background:#38bdf822;color:#93c5fd",
+    }, gameScopeLabel(g));
+    card.appendChild(el("div", {
+      style: "display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap"
+    }, [
+      el("h2", { style: "margin:0;flex:1;min-width:140px" }, g.name),
+      el("span", { class: `pill ${g.scoreType === "time" ? "pill-time" : "pill-point"}` },
+        g.scoreType === "time" ? "스톱워치" : "점수"),
+      scopeBadge,
+    ]));
+    if (g.scoreType === "time") {
+      card.appendChild(el("div", { class: "small muted", style: "margin-bottom:6px" },
+        g.scope === "grade"
+          ? `1등=${(cpgMap[String(g.gradeNum)]||10)*10}점 … 10점 간격 · ${g.timeOrder === "desc" ? "느린 순" : "빠른 순"} 1등`
+          : `1등=180점 … 18등=10점 고정 · ${g.timeOrder === "desc" ? "느린 순" : "빠른 순"} 1등`
+      ));
+    }
+
+    // 입력 현황 — 학년별로 그룹핑 (scope=grade면 그 학년만)
+    const showGrades = (g.scope === "grade" && g.gradeNum) ? [Number(g.gradeNum)] : [];
+    if (showGrades.length === 0) for (let i = 1; i <= G; i++) showGrades.push(i);
+
+    for (const gr of showGrades) {
+      card.appendChild(el("div", {
+        class: "small muted",
+        style: "margin:8px 0 4px;font-weight:700;color:#cfe0ff",
+      }, `${gr}학년`));
+      const grid = el("div", { class: "progress-grid" });
+      const CPG = Number(cpgMap[String(gr)] || 10);
+      for (let c = 1; c <= CPG; c++) {
+        const cid = `${gr}-${c}`;
+        const done = scoresObj[cid] != null;
+        grid.appendChild(el("div", { class: `progress-cell ${done ? "done" : ""}` }, `${c}반`));
       }
+      card.appendChild(grid);
     }
-  }
 
-  // 다크 모듈
-  m[size - 8][8] = 1;
-  reserved[size - 8][8] = true;
-
-  // 형식정보 예약
-  for (let i = 0; i <= 8; i++) { reserved[8][i] = true; reserved[i][8] = true; }
-  for (let i = 0; i < 8; i++) { reserved[8][size - 1 - i] = true; reserved[size - 1 - i][8] = true; }
-
-  // 데이터 배치
-  let bitIdx = 0;
-  const bits = [];
-  for (const cw of codewords) for (let b = 7; b >= 0; b--) bits.push((cw >>> b) & 1);
-
-  let row = size - 1, col = size - 1, dir = -1;
-  while (col > 0) {
-    if (col === 6) col--;
-    for (let _ = 0; _ < size; _++) {
-      for (const c of [col, col - 1]) {
-        if (!reserved[row][c]) {
-          m[row][c] = bitIdx < bits.length ? bits[bitIdx++] : 0;
+    // 등수 테이블
+    if (ranked.length === 0) {
+      card.appendChild(el("div", { class: "rank-empty" }, "아직 입력된 기록이 없습니다."));
+    } else {
+      const table = el("table", { class: "rank-table", style: "margin-top:10px" });
+      const headCols = [
+        el("th", {}, "등수"),
+        el("th", {}, "반"),
+        el("th", {}, g.scoreType === "time" ? "기록" : "점수"),
+      ];
+      if (g.scoreType === "time") headCols.push(el("th", {}, "획득점수"));
+      table.appendChild(el("thead", {}, el("tr", {}, headCols)));
+      const tbody = el("tbody");
+      for (const r of ranked) {
+        const cols = [
+          el("td", { class: `rank rank-${r.rank <= 3 ? r.rank : ""}` }, `${r.rank}위`),
+          el("td", {}, formatClassId(r.classId)),
+          el("td", {}, scoreToText(g.scoreType, r.value)),
+        ];
+        if (g.scoreType === "time") {
+          cols.push(el("td", { style: "font-weight:800" }, `${scoreMap[r.classId] ?? 0}점`));
         }
+        tbody.appendChild(el("tr", {}, cols));
       }
-      row += dir;
-      if (row < 0 || row >= size) {
-        dir = -dir;
-        row += dir;
-        col -= 2;
-        break;
-      }
+      table.appendChild(tbody);
+      card.appendChild(table);
     }
+    wrap.appendChild(card);
   }
-
-  return { m, reserved, size };
 }
 
-function applyMask(m, reserved, maskIdx) {
-  const size = m.length;
-  const formulas = [
-    (r,c) => (r+c)%2===0,
-    (r,c) => r%2===0,
-    (r,c) => c%3===0,
-    (r,c) => (r+c)%3===0,
-    (r,c) => (Math.floor(r/2)+Math.floor(c/3))%2===0,
-    (r,c) => (r*c)%2 + (r*c)%3 === 0,
-    (r,c) => ((r*c)%2 + (r*c)%3) % 2 === 0,
-    (r,c) => ((r+c)%2 + (r*c)%3) % 2 === 0,
-  ];
-  const fn = formulas[maskIdx];
-  const out = m.map(r => r.slice());
-  for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) {
-    if (!reserved[r][c] && fn(r, c)) out[r][c] ^= 1;
-  }
-  return out;
-}
+/* ---------------- 종합 등수 ---------------- */
+function renderTotal() {
+  const wrap = document.getElementById("totalRank");
+  const games = sortedGames();
+  const ids = allClassIds();
+  const cpgMap = classesPerGradeMap();
 
-function placeFormatInfo(m, maskIdx) {
-  const data = (0b01 << 3) | maskIdx; // EC=L(01), mask
-  const info = bchTypeInfo(data);
-  const size = m.length;
-  // 좌상단 L자: bit 0..5 → 열 8 아래로, bit 6 (7,8), bit 7 (8,8), bit 8 (8,7), bit 9..14 → 행 8 왼쪽으로
-  for (let i = 0; i <= 5; i++) m[i][8] = (info >>> i) & 1;
-  m[7][8] = (info >>> 6) & 1;
-  m[8][8] = (info >>> 7) & 1;
-  m[8][7] = (info >>> 8) & 1;
-  for (let i = 9; i <= 14; i++) m[8][14 - i] = (info >>> i) & 1;
-  // 우상단: 비트 0-7 (행 8, 오른쪽에서 왼쪽으로)
-  for (let i = 0; i <= 7; i++) m[8][size - 1 - i] = (info >>> i) & 1;
-  // 좌하단: 비트 8-14 (열 8, 아래로)
-  for (let i = 8; i <= 14; i++) m[size - 15 + i][8] = (info >>> i) & 1;
-  // 다크 모듈
-  m[size - 8][8] = 1;
-}
+  const totals = {};
+  for (const cid of ids) totals[cid] = { classId: cid, total: 0, details: [] };
 
-function evaluateMask(m) {
-  const size = m.length;
-  let penalty = 0;
-  // 규칙 1: 연속 같은 색
-  function scan(line) {
-    let s = 0;
-    for (let i = 0; i < line.length; i++) {
-      if (i > 0 && line[i] === line[i - 1]) s++;
-      else { if (s >= 5) penalty += s - 2; s = 1; }
-    }
-    if (s >= 5) penalty += s - 2;
-  }
-  for (let r = 0; r < size; r++) scan(m[r]);
-  for (let c = 0; c < size; c++) scan(m.map(r => r[c]));
-  return penalty;
-}
+  for (const [gid, g] of games) {
+    const scoresObj = getState().scores[gid] || {};
+    const scopeIds = getScopeClassIds(g, ids);
+    const { scoreMap, ranked } = computeScores(g, scoresObj, scopeIds, cpgMap, "last");
+    const rankMap = {};
+    for (const r of ranked) rankMap[r.classId] = r.rank;
 
-function buildQR(str) {
-  const len = new TextEncoder().encode(str).length;
-  const version = pickVersion(len);
-  const data = encodeData(str, version);
-  const codewords = interleave(data, version);
-  const { m, reserved, size } = buildMatrix(version, codewords);
-
-  let best = null;
-  for (let maskIdx = 0; maskIdx < 8; maskIdx++) {
-    const masked = applyMask(m, reserved, maskIdx);
-    placeFormatInfo(masked, maskIdx);
-    const p = evaluateMask(masked);
-    if (!best || p < best.p) best = { matrix: masked, p, maskIdx };
-  }
-  return { matrix: best.matrix, size };
-}
-
-export function renderQRCode(container, text, pixelSize = 10, margin = 4) {
-  const { matrix, size } = buildQR(text);
-  const total = size + margin * 2;
-  const dim = total * pixelSize;
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${dim}" height="${dim}" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges" style="display:block;max-width:100%;height:auto;">`;
-  svg += `<rect width="${total}" height="${total}" fill="#ffffff"/>`;
-  let path = "";
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
-      if (matrix[r][c]) {
-        path += `M${c + margin},${r + margin}h1v1h-1z`;
+    for (const cid of scopeIds) {
+      if (!(cid in totals)) continue;
+      const pts = scoreMap[cid] ?? 0;
+      totals[cid].total += pts;
+      if (pts > 0) {
+        totals[cid].details.push({
+          game: g.name,
+          rank: rankMap[cid] || null,
+          pts,
+          type: g.scoreType,
+        });
       }
     }
   }
-  svg += `<path d="${path}" fill="#000000"/></svg>`;
-  container.innerHTML = svg;
+
+  const arr = Object.values(totals).sort((a, b) => {
+    if (b.total !== a.total) return b.total - a.total;
+    const pa = parseClassId(a.classId), pb = parseClassId(b.classId);
+    return pa.grade - pb.grade || pa.classNum - pb.classNum;
+  });
+  let prev = null, rk = 0, idx = 0;
+  for (const t of arr) {
+    idx++;
+    if (prev === null || t.total !== prev) rk = idx;
+    t.rank = rk;
+    prev = t.total;
+  }
+
+  wrap.innerHTML = "";
+  if (games.length === 0) {
+    wrap.appendChild(el("div", { class: "empty" }, "등록된 종목이 없습니다."));
+    return;
+  }
+
+  const table = el("table", { class: "rank-table" });
+  table.appendChild(el("thead", {}, el("tr", {}, [
+    el("th", {}, "등수"),
+    el("th", {}, "반"),
+    el("th", {}, "종합점수"),
+    el("th", {}, "세부"),
+  ])));
+  const tbody = el("tbody");
+  for (const t of arr) {
+    const detail = t.details.length
+      ? t.details.map(d => d.rank ? `${d.game} ${d.rank}위(+${d.pts})` : `${d.game}(+${d.pts})`).join(", ")
+      : "-";
+    tbody.appendChild(el("tr", {}, [
+      el("td", { class: `rank rank-${t.rank <= 3 ? t.rank : ""}` }, `${t.rank}위`),
+      el("td", {}, formatClassId(t.classId)),
+      el("td", { style: "font-weight:800" }, `${t.total}점`),
+      el("td", { class: "small muted" }, detail),
+    ]));
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
 }
+
+/* ---------------- 데이터 초기화 버튼 ---------------- */
+const HQ_PASSWORD = "5350";
+
+// 비밀번호를 입력받는 prompt 모달 (CSS 모달 재사용 없이 직접 만들어 띄움)
+function passwordPrompt(message) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.style.alignItems = "center";
+    wrap.innerHTML = `
+      <div class="modal" style="max-width:340px;text-align:center;">
+        <h3 style="margin:0 0 6px">⚠ 본부 비밀번호 확인</h3>
+        <p class="small muted" style="margin:0 0 12px;white-space:pre-line">${message || ""}</p>
+        <input type="password" inputmode="numeric" autocomplete="off" maxlength="16"
+               class="input" placeholder="비밀번호"
+               style="text-align:center;font-size:20px;letter-spacing:6px;" />
+        <div class="small" style="color:#fca5a5;min-height:18px;margin-top:6px" data-err></div>
+        <div class="spacer"></div>
+        <div class="row">
+          <button class="btn btn-ghost" data-cancel>취소</button>
+          <button class="btn btn-danger" data-ok>확인</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const inp = wrap.querySelector("input");
+    const err = wrap.querySelector("[data-err]");
+    const close = (val) => { wrap.remove(); resolve(val); };
+    setTimeout(() => inp.focus(), 50);
+    wrap.querySelector("[data-cancel]").addEventListener("click", () => close(false));
+    wrap.querySelector("[data-ok]").addEventListener("click", () => {
+      if (inp.value === HQ_PASSWORD) close(true);
+      else { err.textContent = "비밀번호가 올바르지 않습니다"; inp.value = ""; inp.focus(); }
+    });
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") wrap.querySelector("[data-ok]").click();
+      if (e.key === "Escape") close(false);
+    });
+    wrap.addEventListener("click", (e) => { if (e.target === wrap) close(false); });
+  });
+}
+
+document.getElementById("resetScoresBtn")?.addEventListener("click", async () => {
+  const ok = await confirmBox(
+    "모든 점수/기록을 삭제할까요?\n(종목 목록은 그대로 남습니다)\n\n이 작업은 되돌릴 수 없습니다."
+  );
+  if (!ok) return;
+  const pwOk = await passwordPrompt("점수 초기화를 위해\n본부 비밀번호를 입력하세요.");
+  if (!pwOk) return;
+  try { await api.resetScores(); toast("점수가 초기화되었습니다"); }
+  catch (e) { toast("실패"); }
+});
+
+document.getElementById("resetAllBtn")?.addEventListener("click", async () => {
+  const ok = await confirmBox(
+    "⚠️ 전체 초기화\n\n모든 종목과 모든 점수가 완전히 삭제됩니다.\n학교 이름과 학년/반 구성만 남고 나머지는 사라집니다.\n\n정말 진행할까요?"
+  );
+  if (!ok) return;
+  const pwOk = await passwordPrompt("전체 초기화를 위해\n본부 비밀번호를 입력하세요.");
+  if (!pwOk) return;
+  try { await api.resetAll(); toast("전체 초기화 완료"); }
+  catch (e) { toast("실패"); }
+});
+
+/* ---------------- 심판 초대 QR 모달 ---------------- */
+const hqShareBtn = document.getElementById("hqShareBtn");
+const hqModal = document.getElementById("hqConnectModal");
+const hqCloseBtn = document.getElementById("hqCloseConnectBtn");
+let hqPollTimer = null;
+
+function hqApplyInfo(info) {
+  const isCloud = !!info.isCloud;
+  const tabs = document.getElementById("hqConnTabs");
+  const localPanel = document.getElementById("hqcpanel-local");
+  if (isCloud) {
+    if (tabs) tabs.style.display = "none";
+    if (localPanel) localPanel.classList.add("hidden");
+  }
+  const localUrl = info.localUrl;
+  document.getElementById("hqLocalUrl").textContent = localUrl;
+  const qrLocal = document.getElementById("hqQrWrapLocal");
+  if (qrLocal && (!qrLocal.dataset.url || qrLocal.dataset.url !== localUrl)) {
+    renderQRCode(qrLocal, localUrl, 10, 4);
+    qrLocal.dataset.url = localUrl;
+  }
+
+  const loading = document.getElementById("hqTunnelLoading");
+  const ready = document.getElementById("hqTunnelReady");
+  const error = document.getElementById("hqTunnelError");
+  const statusText = document.getElementById("hqTunnelStatusText");
+
+  if (info.tunnelStatus === "ready" && info.tunnelUrl) {
+    loading.classList.add("hidden");
+    error.classList.add("hidden");
+    ready.classList.remove("hidden");
+    document.getElementById("hqTunnelUrl").textContent = info.tunnelUrl;
+    const qr = document.getElementById("hqQrWrap");
+    if (qr.dataset.url !== info.tunnelUrl) {
+      renderQRCode(qr, info.tunnelUrl, 10, 4);
+      qr.dataset.url = info.tunnelUrl;
+    }
+  } else if (info.tunnelStatus === "error" || info.tunnelStatus === "disabled") {
+    loading.classList.add("hidden");
+    ready.classList.add("hidden");
+    error.classList.remove("hidden");
+    document.getElementById("hqTunnelErrorMsg").textContent = info.tunnelMessage || "";
+  } else {
+    ready.classList.add("hidden");
+    error.classList.add("hidden");
+    loading.classList.remove("hidden");
+    const msgMap = {
+      downloading: "cloudflared.exe 다운로드 중... (최초 1회, 약 40MB)",
+      starting: "공개 주소 생성 중...",
+    };
+    statusText.textContent = msgMap[info.tunnelStatus] || (info.tunnelMessage || "준비 중...");
+  }
+}
+
+async function hqFetchInfo() {
+  try {
+    const res = await fetch("/api/info");
+    const info = await res.json();
+    hqApplyInfo(info);
+    if (info.tunnelStatus === "starting" || info.tunnelStatus === "downloading") {
+      hqPollTimer = setTimeout(hqFetchInfo, 2000);
+    } else {
+      hqPollTimer = null;
+    }
+  } catch (e) {
+    hqPollTimer = setTimeout(hqFetchInfo, 3000);
+  }
+}
+
+function hqSelectTab(which) {
+  $$("#hqConnTabs button").forEach(b => {
+    b.classList.toggle("active", b.dataset.htab === which);
+  });
+  document.getElementById("hqcpanel-tunnel").classList.toggle("hidden", which !== "tunnel");
+  document.getElementById("hqcpanel-local").classList.toggle("hidden", which !== "local");
+}
+
+$$("#hqConnTabs button").forEach(b => {
+  b.addEventListener("click", () => hqSelectTab(b.dataset.htab));
+});
+
+function hqOpenModal() {
+  hqModal.classList.remove("hidden");
+  hqSelectTab("tunnel");
+  hqFetchInfo();
+}
+function hqCloseModal() {
+  hqModal.classList.add("hidden");
+  if (hqPollTimer) { clearTimeout(hqPollTimer); hqPollTimer = null; }
+}
+
+hqShareBtn?.addEventListener("click", hqOpenModal);
+hqCloseBtn?.addEventListener("click", hqCloseModal);
+hqModal?.addEventListener("click", (e) => { if (e.target === hqModal) hqCloseModal(); });
